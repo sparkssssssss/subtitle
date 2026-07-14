@@ -31,7 +31,6 @@ import java.io.File;
 import java.io.FileOutputStream;
 import java.io.IOException;
 import java.io.InputStream;
-import java.io.RandomAccessFile;
 import java.net.HttpURLConnection;
 import java.net.URL;
 import java.net.URLDecoder;
@@ -50,13 +49,6 @@ import com.github.junrar.exception.RarException;
 import com.github.junrar.rarfile.FileHeader;
 import net.lingala.zip4j.ZipFile;
 import net.lingala.zip4j.exception.ZipException;
-import net.sf.sevenzipjbinding.ExtractOperationResult;
-import net.sf.sevenzipjbinding.IInArchive;
-import net.sf.sevenzipjbinding.ISequentialOutStream;
-import net.sf.sevenzipjbinding.SevenZip;
-import net.sf.sevenzipjbinding.SevenZipException;
-import net.sf.sevenzipjbinding.impl.RandomAccessFileInStream;
-import net.sf.sevenzipjbinding.simple.ISimpleInArchiveItem;
 
 public class MainActivity extends Activity {
     private static final String TAG = "SubtitleDownloader";
@@ -375,29 +367,27 @@ public class MainActivity extends Activity {
             } catch (Exception zipError) {
                 return "已下载 ZIP，但自动解压失败：" + zipError.getMessage() + "\n文件类型：" + archiveType(file.file) + "\n文件：" + file.displayPath;
             }
-        } else if (lowerName.endsWith(".rar") || lowerName.endsWith(".7z")) {
+        } else if (lowerName.endsWith(".rar")) {
             File extractDir = archiveExtractDir(file.file);
+            String type = archiveType(file.file);
+            if ("RAR5".equals(type)) {
+                return "已下载 RAR5 压缩包，但当前内置组件暂不支持 RAR5 自动解压。"
+                        + "\n文件已保留：" + file.displayPath
+                        + "\n建议：后续接入 Android 原生 p7zip/libarchive，或先用外部解压工具处理。";
+            }
             try {
-                int count = extractArchiveWithSevenZip(file.file, extractDir);
-                if (count > 0) return "已下载并解压 " + archiveType(file.file) + " 中的 " + count + " 个文件：" + extractDir.getAbsolutePath();
-                return "已下载压缩包，但里面没有可解压文件：" + file.displayPath;
-            } catch (Throwable sevenZipError) {
-                if (lowerName.endsWith(".rar")) {
-                    try {
-                        int count = unrarArchive(file.file, extractDir);
-                        if (count > 0) return "已下载并解压 RAR 中的 " + count + " 个文件：" + extractDir.getAbsolutePath();
-                    } catch (Exception rarError) {
-                        return "已下载压缩包，但 7-Zip/junrar 均解压失败。"
-                                + "\n文件类型：" + archiveType(file.file)
-                                + "\n7-Zip错误：" + sevenZipError.getClass().getSimpleName() + " " + sevenZipError.getMessage()
-                                + "\njunrar错误：" + rarError.getMessage()
-                                + "\n文件：" + file.displayPath;
-                    }
-                }
-                return "已下载压缩包，但 7-Zip 解压失败：" + sevenZipError.getClass().getSimpleName() + " " + sevenZipError.getMessage()
-                        + "\n文件类型：" + archiveType(file.file)
+                int count = unrarArchive(file.file, extractDir);
+                if (count > 0) return "已下载并解压 RAR 中的 " + count + " 个文件：" + extractDir.getAbsolutePath();
+                return "已下载 RAR，但压缩包里没有可解压文件：" + file.displayPath;
+            } catch (Exception rarError) {
+                return "已下载 RAR，但自动解压失败：" + rarError.getMessage()
+                        + "\n文件类型：" + type
                         + "\n文件：" + file.displayPath;
             }
+        } else if (lowerName.endsWith(".7z")) {
+            return "已下载 7Z 压缩包，但当前内置组件暂不支持 7Z 自动解压。"
+                    + "\n文件已保留：" + file.displayPath
+                    + "\n建议：后续接入 Android 原生 p7zip/libarchive，或先用外部解压工具处理。";
         }
         return "已下载到：" + file.displayPath;
     }
@@ -779,43 +769,6 @@ public class MainActivity extends Activity {
             } catch (ZipException second) {
                 throw new IOException(second.getMessage(), second);
             }
-        }
-    }
-
-    private int extractArchiveWithSevenZip(File archiveFile, File dir) throws IOException, SevenZipException {
-        if (!dir.exists() && !dir.mkdirs()) throw new IOException("无法创建解压目录：" + dir);
-        int count = 0;
-        RandomAccessFile randomAccessFile = null;
-        IInArchive archive = null;
-        try {
-            randomAccessFile = new RandomAccessFile(archiveFile, "r");
-            archive = SevenZip.openInArchive(null, new RandomAccessFileInStream(randomAccessFile));
-            for (ISimpleInArchiveItem item : archive.getSimpleInterface().getArchiveItems()) {
-                if (item.isFolder()) continue;
-                String safePath = safeArchivePath(item.getPath());
-                if (safePath.length() == 0) continue;
-                File outFile = safeArchiveOutputFile(dir, safePath);
-                File parent = outFile.getParentFile();
-                if (parent != null && !parent.exists() && !parent.mkdirs()) throw new IOException("无法创建目录：" + parent);
-                outFile = uniqueFile(parent == null ? dir : parent, outFile.getName());
-                final File finalOutFile = outFile;
-                ExtractOperationResult result = item.extractSlow(new ISequentialOutStream() {
-                    @Override public int write(byte[] data) throws SevenZipException {
-                        try (FileOutputStream out = new FileOutputStream(finalOutFile, true)) {
-                            out.write(data);
-                            return data.length;
-                        } catch (IOException e) {
-                            throw new SevenZipException("写入解压文件失败：" + e.getMessage());
-                        }
-                    }
-                });
-                if (result != ExtractOperationResult.OK) throw new IOException("7-Zip 解压失败：" + result);
-                count++;
-            }
-            return count;
-        } finally {
-            if (archive != null) archive.close();
-            if (randomAccessFile != null) randomAccessFile.close();
         }
     }
 
