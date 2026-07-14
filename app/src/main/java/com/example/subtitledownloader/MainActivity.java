@@ -44,12 +44,11 @@ import java.util.List;
 import java.util.Locale;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
-import java.util.zip.ZipEntry;
-import java.util.zip.ZipInputStream;
-
 import com.github.junrar.Archive;
 import com.github.junrar.exception.RarException;
 import com.github.junrar.rarfile.FileHeader;
+import net.lingala.zip4j.ZipFile;
+import net.lingala.zip4j.exception.ZipException;
 
 public class MainActivity extends Activity {
     private static final String TAG = "SubtitleDownloader";
@@ -349,9 +348,13 @@ public class MainActivity extends Activity {
         String lowerName = file.file.getName().toLowerCase(Locale.US);
         if (lowerName.endsWith(".zip")) {
             File extractDir = archiveExtractDir(file.file);
-            int count = unzipArchive(file.file, extractDir);
-            if (count > 0) return "已下载并解压 ZIP 中的 " + count + " 个文件：" + extractDir.getAbsolutePath();
-            return "已下载 ZIP，但压缩包里没有可解压文件：" + file.displayPath;
+            try {
+                int count = unzipArchive(file.file, extractDir);
+                if (count > 0) return "已下载并解压 ZIP 中的 " + count + " 个文件：" + extractDir.getAbsolutePath();
+                return "已下载 ZIP，但压缩包里没有可解压文件：" + file.displayPath;
+            } catch (Exception zipError) {
+                return "已下载 ZIP，但自动解压失败：" + zipError.getMessage() + "\n文件类型：" + archiveType(file.file) + "\n文件：" + file.displayPath;
+            }
         } else if (lowerName.endsWith(".rar")) {
             try {
                 File extractDir = archiveExtractDir(file.file);
@@ -359,7 +362,9 @@ public class MainActivity extends Activity {
                 if (count > 0) return "已下载并解压 RAR 中的 " + count + " 个文件：" + extractDir.getAbsolutePath();
                 return "已下载 RAR，但压缩包里没有可解压文件：" + file.displayPath;
             } catch (Exception rarError) {
-                return "已下载 RAR，但自动解压失败：" + rarError.getMessage() + "\n文件：" + file.displayPath;
+                String type = archiveType(file.file);
+                String hint = "RAR5".equals(type) ? "\n提示：这是 RAR5，当前 junrar 组件可能不支持，需要后续接入 7-Zip/libarchive。" : "";
+                return "已下载 RAR，但自动解压失败：" + rarError.getMessage() + "\n文件类型：" + type + hint + "\n文件：" + file.displayPath;
             }
         }
         return "已下载到：" + file.displayPath;
@@ -693,37 +698,56 @@ public class MainActivity extends Activity {
     }
 
     private static String detectExtension(byte[] data) {
-        if (data.length >= 4 && data[0] == 'P' && data[1] == 'K') return ".zip";
-        if (data.length >= 7 && data[0] == 'R' && data[1] == 'a' && data[2] == 'r' && data[3] == '!') return ".rar";
-        if (data.length >= 6 && (data[0] & 0xff) == 0x37 && (data[1] & 0xff) == 0x7a) return ".7z";
+        String type = archiveType(data);
+        if ("ZIP".equals(type)) return ".zip";
+        if ("RAR4".equals(type) || "RAR5".equals(type)) return ".rar";
+        if ("7Z".equals(type)) return ".7z";
         String head = new String(data, 0, Math.min(data.length, 200)).toLowerCase(Locale.US);
         if (head.contains("[script info]") || head.contains("dialogue:")) return ".ass";
         if (head.matches("(?s)\\s*\\d+\\s*\\r?\\n\\d{2}:\\d{2}:\\d{2}.*")) return ".srt";
         return null;
     }
 
+    private static String archiveType(File file) {
+        try (InputStream in = new java.io.FileInputStream(file)) {
+            byte[] head = new byte[16];
+            int n = in.read(head);
+            if (n <= 0) return "未知";
+            return archiveType(Arrays.copyOf(head, n));
+        } catch (Exception e) {
+            return "未知";
+        }
+    }
+
+    private static String archiveType(byte[] data) {
+        if (data.length >= 4 && data[0] == 'P' && data[1] == 'K') return "ZIP";
+        if (data.length >= 8 && data[0] == 'R' && data[1] == 'a' && data[2] == 'r' && data[3] == '!' &&
+                (data[4] & 0xff) == 0x1a && (data[5] & 0xff) == 0x07 && (data[6] & 0xff) == 0x01 && (data[7] & 0xff) == 0x00) return "RAR5";
+        if (data.length >= 7 && data[0] == 'R' && data[1] == 'a' && data[2] == 'r' && data[3] == '!' &&
+                (data[4] & 0xff) == 0x1a && (data[5] & 0xff) == 0x07 && (data[6] & 0xff) == 0x00) return "RAR4";
+        if (data.length >= 6 && (data[0] & 0xff) == 0x37 && (data[1] & 0xff) == 0x7a && (data[2] & 0xff) == 0xbc &&
+                (data[3] & 0xff) == 0xaf && (data[4] & 0xff) == 0x27 && (data[5] & 0xff) == 0x1c) return "7Z";
+        String head = new String(data, 0, Math.min(data.length, 16)).trim().toLowerCase(Locale.US);
+        if (head.startsWith("<html") || head.startsWith("<!doctype")) return "HTML";
+        return "未知";
+    }
+
     private int unzipArchive(File zip, File dir) throws IOException {
-        int count = 0;
         if (!dir.exists() && !dir.mkdirs()) throw new IOException("无法创建解压目录：" + dir);
-        byte[] buf = new byte[8192];
-        try (ZipInputStream zis = new ZipInputStream(new BufferedInputStream(new java.io.FileInputStream(zip)))) {
-            ZipEntry e;
-            while ((e = zis.getNextEntry()) != null) {
-                if (e.isDirectory()) continue;
-                String safePath = safeArchivePath(e.getName());
-                if (safePath.length() == 0) continue;
-                File outFile = safeArchiveOutputFile(dir, safePath);
-                File parent = outFile.getParentFile();
-                if (parent != null && !parent.exists() && !parent.mkdirs()) throw new IOException("无法创建目录：" + parent);
-                outFile = uniqueFile(parent == null ? dir : parent, outFile.getName());
-                try (FileOutputStream out = new FileOutputStream(outFile)) {
-                    int n;
-                    while ((n = zis.read(buf)) > 0) out.write(buf, 0, n);
-                }
-                count++;
+        try {
+            ZipFile zipFile = new ZipFile(zip);
+            zipFile.setCharset(java.nio.charset.Charset.forName("GBK"));
+            zipFile.extractAll(dir.getAbsolutePath());
+            return countExtractedFiles(dir);
+        } catch (ZipException e) {
+            try {
+                ZipFile zipFile = new ZipFile(zip);
+                zipFile.extractAll(dir.getAbsolutePath());
+                return countExtractedFiles(dir);
+            } catch (ZipException second) {
+                throw new IOException(second.getMessage(), second);
             }
         }
-        return count;
     }
 
     private int unrarArchive(File rar, File dir) throws IOException, RarException {
@@ -786,6 +810,17 @@ public class MainActivity extends Activity {
         String target = out.getCanonicalPath();
         if (!target.startsWith(root)) throw new IOException("非法压缩包路径：" + safePath);
         return out;
+    }
+
+    private static int countExtractedFiles(File dir) {
+        int count = 0;
+        File[] files = dir.listFiles();
+        if (files == null) return 0;
+        for (File file : files) {
+            if (file.isDirectory()) count += countExtractedFiles(file);
+            else count++;
+        }
+        return count;
     }
 
     private static boolean isManagedFile(String name) {
