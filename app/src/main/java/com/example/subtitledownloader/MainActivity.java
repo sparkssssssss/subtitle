@@ -507,33 +507,42 @@ public class MainActivity extends Activity {
     private static HttpData httpData(String url, boolean allowHttpError) throws IOException { return httpData(url, allowHttpError, null); }
 
     private static HttpData httpData(String url, boolean allowHttpError, String referer) throws IOException {
-        url = normalizeDownloadHost(url);
-        HttpURLConnection conn = (HttpURLConnection) new URL(url).openConnection();
-        conn.setInstanceFollowRedirects(true);
-        conn.setConnectTimeout(15000);
-        conn.setReadTimeout(30000);
-        conn.setRequestProperty("User-Agent", "Mozilla/5.0 (Android TV) SubtitleDownloader/1.0");
-        conn.setRequestProperty("Accept", "text/html,application/xhtml+xml,application/xml,application/zip,*/*");
-        if (referer != null && referer.length() > 0) conn.setRequestProperty("Referer", referer);
-        if (cookieHeader.length() > 0) conn.setRequestProperty("Cookie", cookieHeader);
-        int code = conn.getResponseCode();
-        rememberCookies(conn);
-        ByteArrayOutputStream bos = new ByteArrayOutputStream();
-        InputStream raw = (code >= 200 && code < 300) ? conn.getInputStream() : conn.getErrorStream();
-        if (raw != null) {
-            try (InputStream in = new BufferedInputStream(raw)) {
-                byte[] buf = new byte[8192];
-                int n;
-                while ((n = in.read(buf)) >= 0) bos.write(buf, 0, n);
+        String current = normalizeDownloadHost(url);
+        for (int redirect = 0; redirect < 6; redirect++) {
+            HttpURLConnection conn = (HttpURLConnection) new URL(current).openConnection();
+            conn.setInstanceFollowRedirects(false);
+            conn.setConnectTimeout(15000);
+            conn.setReadTimeout(30000);
+            conn.setRequestProperty("User-Agent", "Mozilla/5.0 (Android TV) SubtitleDownloader/1.0");
+            conn.setRequestProperty("Accept", "text/html,application/xhtml+xml,application/xml,application/zip,*/*");
+            if (referer != null && referer.length() > 0) conn.setRequestProperty("Referer", referer);
+            if (cookieHeader.length() > 0) conn.setRequestProperty("Cookie", cookieHeader);
+            int code = conn.getResponseCode();
+            rememberCookies(conn);
+            if (isRedirect(code)) {
+                String location = conn.getHeaderField("Location");
+                if (location == null || location.length() == 0) throw new IOException("HTTP " + code + " 缺少 Location：" + current);
+                current = normalizeDownloadHost(resolveUrl(location, current));
+                continue;
             }
+            ByteArrayOutputStream bos = new ByteArrayOutputStream();
+            InputStream raw = (code >= 200 && code < 300) ? conn.getInputStream() : conn.getErrorStream();
+            if (raw != null) {
+                try (InputStream in = new BufferedInputStream(raw)) {
+                    byte[] buf = new byte[8192];
+                    int n;
+                    while ((n = in.read(buf)) >= 0) bos.write(buf, 0, n);
+                }
+            }
+            byte[] body = bos.toByteArray();
+            if (!allowHttpError && (code < 200 || code >= 300)) {
+                String text = new String(body, "UTF-8");
+                if (parseCaptcha(text, current) == null) throw new IOException("HTTP " + code + "：" + current);
+            }
+            String name = fileNameFromConnection(conn, current);
+            return new HttpData(body, name, conn.getContentType());
         }
-        byte[] body = bos.toByteArray();
-        if (!allowHttpError && (code < 200 || code >= 300)) {
-            String text = new String(body, "UTF-8");
-            if (parseCaptcha(text, url) == null) throw new IOException("HTTP " + code + "：" + url);
-        }
-        String name = fileNameFromConnection(conn, url);
-        return new HttpData(body, name, conn.getContentType());
+        throw new IOException("HTTP 重定向次数过多：" + url);
     }
 
     private static HttpData resolveDownloadData(String url) throws IOException {
@@ -553,8 +562,18 @@ public class MainActivity extends Activity {
         throw new IOException("下载跳转层级过多");
     }
 
+    private static boolean isRedirect(int code) {
+        return code == 301 || code == 302 || code == 303 || code == 307 || code == 308;
+    }
+
+    private static String resolveUrl(String location, String baseUrl) throws IOException {
+        return new URL(new URL(baseUrl), location).toString();
+    }
+
     private static String normalizeDownloadHost(String url) {
+        if (url.equals("http://srtku.com")) return "https://srtku.com";
         if (url.startsWith("http://srtku.com/")) return "https://srtku.com/" + url.substring("http://srtku.com/".length());
+        if (url.equals("http://www.srtku.com")) return "https://www.srtku.com";
         if (url.startsWith("http://www.srtku.com/")) return "https://www.srtku.com/" + url.substring("http://www.srtku.com/".length());
         return url;
     }
