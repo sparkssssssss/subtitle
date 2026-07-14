@@ -46,7 +46,7 @@ import com.github.junrar.rarfile.FileHeader;
 
 public class MainActivity extends Activity {
     private static final int REQ_STORAGE = 100;
-    private static final String BASE = "https://assrt.net";
+    private static final String BASE = "https://zimuku.org";
     private EditText searchInput;
     private Button searchButton;
     private Button filesButton;
@@ -201,14 +201,24 @@ public class MainActivity extends Activity {
         @Override protected void onPreExecute() {
             items.clear();
             adapter.clear();
-            statusText.setText("正在搜索 assrt.net ...");
+            statusText.setText("正在搜索 zimuku.org ...");
         }
 
         @Override protected List<SubtitleItem> doInBackground(String... params) {
             try {
                 String q = URLEncoder.encode(params[0], "UTF-8");
-                String html = httpGet(BASE + "/sub/?searchword=" + q);
-                return parseSearch(html);
+                IOException lastError = null;
+                for (String url : zimukuSearchUrls(q)) {
+                    try {
+                        String html = httpGet(url);
+                        List<SubtitleItem> parsed = parseSearch(html);
+                        if (!parsed.isEmpty()) return parsed;
+                    } catch (IOException e) {
+                        lastError = e;
+                    }
+                }
+                if (lastError != null) throw lastError;
+                return new ArrayList<>();
             } catch (Exception e) {
                 error = e.getMessage();
                 return new ArrayList<>();
@@ -221,7 +231,7 @@ public class MainActivity extends Activity {
             for (SubtitleItem item : items) adapter.add(item.title + "\n" + item.url);
             adapter.notifyDataSetChanged();
             if (error != null) statusText.setText("搜索失败：" + error);
-            else if (items.isEmpty()) statusText.setText("没有找到结果。assrt.net 页面变化时可能需要调整解析规则。");
+            else if (items.isEmpty()) statusText.setText("没有找到结果。zimuku.org 页面变化或需要验证码时可能无法搜索。");
             else statusText.setText("找到 " + items.size() + " 个结果，选择一项按确定键下载。仅显示前 30 项。");
         }
     }
@@ -281,13 +291,29 @@ public class MainActivity extends Activity {
             if (text.length() < 2) continue;
             String abs = absoluteUrl(href);
             String lower = abs.toLowerCase(Locale.US);
-            boolean detail = lower.contains("/sub/") && (lower.contains("id=") || lower.matches(".*/sub/\\d+.*"));
+            boolean detail = looksLikeZimukuDetail(lower);
             boolean direct = looksLikeDownload(lower);
             if (!detail && !direct) continue;
             if (containsUrl(out, abs)) continue;
             out.add(new SubtitleItem(text, abs));
         }
         return out;
+    }
+
+    private static String[] zimukuSearchUrls(String encodedQuery) {
+        return new String[]{
+                BASE + "/search?q=" + encodedQuery,
+                BASE + "/search?keyword=" + encodedQuery,
+                BASE + "/search/" + encodedQuery
+        };
+    }
+
+    private static boolean looksLikeZimukuDetail(String lowerUrl) {
+        if (!lowerUrl.startsWith(BASE)) return false;
+        if (lowerUrl.contains("/search")) return false;
+        return lowerUrl.contains("/detail/") || lowerUrl.contains("/subtitle/") ||
+                lowerUrl.contains("/sub/") || lowerUrl.matches(".*/[0-9]+\\.html(\\?.*)?$") ||
+                lowerUrl.matches(".*/[0-9]+(\\?.*)?$");
     }
 
     private static String findDownloadUrl(String html) {

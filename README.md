@@ -4,7 +4,7 @@
 
 ## 功能
 
-- 字幕源：`https://assrt.net/`
+- 字幕源：`https://zimuku.org/`
 - 输入关键词搜索字幕
 - 用遥控器方向键选择结果，确定键下载
 - 保存目录：公共下载目录下的 `Download/subtitle/`
@@ -39,6 +39,6 @@ app/build/outputs/apk/debug/app-debug.apk
 
 ## 注意
 
-assrt.net 没有使用官方公开 API，本应用通过网页 HTML 做轻量解析。如果网站页面结构或访问策略变化，可能需要调整 `parseSearch()` / `findDownloadUrl()` 的规则。
+zimuku.org 没有使用官方公开 API，本应用通过网页 HTML 做轻量解析。如果网站页面结构、搜索路径或访问策略变化，可能需要调整 `zimukuSearchUrls()` / `parseSearch()` / `findDownloadUrl()` 的规则。
 
 RAR 解压通过 `junrar` 实现。部分 RAR5、加密压缩包或特殊压缩包可能无法解压；这种情况下应用会保留原 `.rar` 文件在 `Download/subtitle/`。
