@@ -1,3 +1,8 @@
 <network-security-config>
     <base-config cleartextTrafficPermitted="false" />
+
+    <!-- zimuku.org 的真实下载链路可能跳到 http://srtku.com/... -->
+    <domain-config cleartextTrafficPermitted="true">
+        <domain includeSubdomains="true">srtku.com</domain>
+    </domain-config>
 </network-security-config>

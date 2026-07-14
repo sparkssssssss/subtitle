@@ -507,6 +507,7 @@ public class MainActivity extends Activity {
     private static HttpData httpData(String url, boolean allowHttpError) throws IOException { return httpData(url, allowHttpError, null); }
 
     private static HttpData httpData(String url, boolean allowHttpError, String referer) throws IOException {
+        url = normalizeDownloadHost(url);
         HttpURLConnection conn = (HttpURLConnection) new URL(url).openConnection();
         conn.setInstanceFollowRedirects(true);
         conn.setConnectTimeout(15000);
@@ -550,6 +551,12 @@ public class MainActivity extends Activity {
             current = next;
         }
         throw new IOException("下载跳转层级过多");
+    }
+
+    private static String normalizeDownloadHost(String url) {
+        if (url.startsWith("http://srtku.com/")) return "https://srtku.com/" + url.substring("http://srtku.com/".length());
+        if (url.startsWith("http://www.srtku.com/")) return "https://www.srtku.com/" + url.substring("http://www.srtku.com/".length());
+        return url;
     }
 
     private static boolean looksLikeHtml(HttpData data) {
