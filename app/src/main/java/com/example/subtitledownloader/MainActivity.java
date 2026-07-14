@@ -64,6 +64,7 @@ public class MainActivity extends Activity {
     private ArrayAdapter<String> adapter;
     private boolean fileMode = false;
     private String pendingSearchQuery = "";
+    private SubtitleItem pendingDownloadItem = null;
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
@@ -253,15 +254,19 @@ public class MainActivity extends Activity {
 
     private class DownloadTask extends AsyncTask<SubtitleItem, String, String> {
         private String error;
+        private CaptchaChallenge captcha;
+        private SubtitleItem item;
 
         @Override protected void onPreExecute() { statusText.setText("准备下载..."); }
         @Override protected void onProgressUpdate(String... values) { statusText.setText(values[0]); }
 
         @Override protected String doInBackground(SubtitleItem... params) {
             try {
-                SubtitleItem item = params[0];
+                item = params[0];
                 publishProgress("打开详情页...");
                 String detailHtml = httpGet(item.url);
+                CaptchaChallenge detailCaptcha = parseCaptcha(detailHtml, item.url);
+                if (detailCaptcha != null) throw new CaptchaRequiredException(detailCaptcha);
                 String downloadUrl = findDownloadUrl(detailHtml);
                 if (downloadUrl == null) {
                     if (looksLikeDownload(item.url)) downloadUrl = item.url;
@@ -285,6 +290,10 @@ public class MainActivity extends Activity {
                     }
                 }
                 return "已下载到：" + file.displayPath;
+            } catch (CaptchaRequiredException e) {
+                captcha = e.challenge;
+                error = e.getMessage();
+                return null;
             } catch (Exception e) {
                 error = e.getMessage();
                 return null;
@@ -292,7 +301,11 @@ public class MainActivity extends Activity {
         }
 
         @Override protected void onPostExecute(String msg) {
-            if (error != null) statusText.setText("下载失败：" + error);
+            if (captcha != null) {
+                pendingDownloadItem = item;
+                statusText.setText("下载时需要验证码，请输入后继续下载。 ");
+                showCaptchaDialog(captcha);
+            } else if (error != null) statusText.setText("下载失败：" + error);
             else statusText.setText(msg);
             if (fileMode) loadLocalFiles();
         }
@@ -387,8 +400,15 @@ public class MainActivity extends Activity {
 
         @Override protected void onPostExecute(Boolean ok) {
             if (ok) {
-                statusText.setText("验证码已提交，正在重试搜索...");
-                if (pendingSearchQuery.length() > 0) new SearchTask().execute(pendingSearchQuery);
+                if (pendingDownloadItem != null) {
+                    SubtitleItem item = pendingDownloadItem;
+                    pendingDownloadItem = null;
+                    statusText.setText("验证码已提交，正在继续下载...");
+                    new DownloadTask().execute(item);
+                } else {
+                    statusText.setText("验证码已提交，正在重试搜索...");
+                    if (pendingSearchQuery.length() > 0) new SearchTask().execute(pendingSearchQuery);
+                }
             } else if (nextCaptcha != null) {
                 statusText.setText(error + "，请重新输入。 ");
                 showCaptchaDialog(nextCaptcha);
@@ -508,6 +528,7 @@ public class MainActivity extends Activity {
 
     private static HttpData httpData(String url, boolean allowHttpError, String referer) throws IOException {
         String current = normalizeDownloadHost(url);
+        String currentReferer = referer;
         for (int redirect = 0; redirect < 6; redirect++) {
             HttpURLConnection conn = (HttpURLConnection) new URL(current).openConnection();
             conn.setInstanceFollowRedirects(false);
@@ -515,14 +536,16 @@ public class MainActivity extends Activity {
             conn.setReadTimeout(30000);
             conn.setRequestProperty("User-Agent", "Mozilla/5.0 (Android TV) SubtitleDownloader/1.0");
             conn.setRequestProperty("Accept", "text/html,application/xhtml+xml,application/xml,application/zip,*/*");
-            if (referer != null && referer.length() > 0) conn.setRequestProperty("Referer", referer);
+            if (currentReferer != null && currentReferer.length() > 0) conn.setRequestProperty("Referer", currentReferer);
             if (cookieHeader.length() > 0) conn.setRequestProperty("Cookie", cookieHeader);
             int code = conn.getResponseCode();
             rememberCookies(conn);
             if (isRedirect(code)) {
                 String location = conn.getHeaderField("Location");
                 if (location == null || location.length() == 0) throw new IOException("HTTP " + code + " 缺少 Location：" + current);
+                String previous = current;
                 current = normalizeDownloadHost(resolveUrl(location, current));
+                currentReferer = previous;
                 continue;
             }
             ByteArrayOutputStream bos = new ByteArrayOutputStream();
@@ -553,7 +576,7 @@ public class MainActivity extends Activity {
             if (!looksLikeHtml(data)) return data;
             String html = new String(data.data, "UTF-8");
             CaptchaChallenge captcha = parseCaptcha(html, current);
-            if (captcha != null) throw new IOException("下载时遇到验证码，请先重新搜索并完成验证码");
+            if (captcha != null) throw new CaptchaRequiredException(captcha);
             String next = findDownloadUrl(html);
             if (next == null || next.equals(current)) throw new IOException("下载页里没有找到真实字幕文件链接");
             referer = current;
@@ -571,10 +594,6 @@ public class MainActivity extends Activity {
     }
 
     private static String normalizeDownloadHost(String url) {
-        if (url.equals("http://srtku.com")) return "https://srtku.com";
-        if (url.startsWith("http://srtku.com/")) return "https://srtku.com/" + url.substring("http://srtku.com/".length());
-        if (url.equals("http://www.srtku.com")) return "https://www.srtku.com";
-        if (url.startsWith("http://www.srtku.com/")) return "https://www.srtku.com/" + url.substring("http://www.srtku.com/".length());
         return url;
     }
 
@@ -663,9 +682,12 @@ public class MainActivity extends Activity {
     }
 
     private static void rememberCookies(HttpURLConnection conn) {
-        List<String> cookies = conn.getHeaderFields().get("Set-Cookie");
-        if (cookies == null || cookies.isEmpty()) return;
-        for (String cookie : cookies) putCookiePair(cookie.split(";", 2)[0]);
+        for (String key : conn.getHeaderFields().keySet()) {
+            if (key == null || !"Set-Cookie".equalsIgnoreCase(key)) continue;
+            List<String> cookies = conn.getHeaderFields().get(key);
+            if (cookies == null || cookies.isEmpty()) continue;
+            for (String cookie : cookies) putCookiePair(cookie.split(";", 2)[0]);
+        }
     }
 
     private static void putCookie(String key, String value) {
@@ -775,6 +797,14 @@ public class MainActivity extends Activity {
         CaptchaChallenge(String imageBase64, String sourceUrl) {
             this.imageBase64 = imageBase64;
             this.sourceUrl = sourceUrl;
+        }
+    }
+
+    private static class CaptchaRequiredException extends IOException {
+        final CaptchaChallenge challenge;
+        CaptchaRequiredException(CaptchaChallenge challenge) {
+            super("需要验证码");
+            this.challenge = challenge;
         }
     }
 
