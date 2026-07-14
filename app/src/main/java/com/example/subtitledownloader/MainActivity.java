@@ -348,13 +348,16 @@ public class MainActivity extends Activity {
         DownloadedFile file = downloadToSubtitleFolder(downloadData, safeName(item.title));
         String lowerName = file.file.getName().toLowerCase(Locale.US);
         if (lowerName.endsWith(".zip")) {
-            int count = unzipSubtitles(file.file);
-            if (count > 0) return "已下载并解压 ZIP 中的 " + count + " 个字幕：" + subtitleDir().getAbsolutePath();
+            File extractDir = archiveExtractDir(file.file);
+            int count = unzipArchive(file.file, extractDir);
+            if (count > 0) return "已下载并解压 ZIP 中的 " + count + " 个文件：" + extractDir.getAbsolutePath();
+            return "已下载 ZIP，但压缩包里没有可解压文件：" + file.displayPath;
         } else if (lowerName.endsWith(".rar")) {
             try {
-                int count = unrarSubtitles(file.file);
-                if (count > 0) return "已下载并解压 RAR 中的 " + count + " 个字幕：" + subtitleDir().getAbsolutePath();
-                return "已下载 RAR，但里面没有找到 ass/ssa/srt/sup 字幕：" + file.displayPath;
+                File extractDir = archiveExtractDir(file.file);
+                int count = unrarArchive(file.file, extractDir);
+                if (count > 0) return "已下载并解压 RAR 中的 " + count + " 个文件：" + extractDir.getAbsolutePath();
+                return "已下载 RAR，但压缩包里没有可解压文件：" + file.displayPath;
             } catch (Exception rarError) {
                 return "已下载 RAR，但自动解压失败：" + rarError.getMessage() + "\n文件：" + file.displayPath;
             }
@@ -699,17 +702,20 @@ public class MainActivity extends Activity {
         return null;
     }
 
-    private int unzipSubtitles(File zip) throws IOException {
+    private int unzipArchive(File zip, File dir) throws IOException {
         int count = 0;
-        File dir = subtitleDir();
+        if (!dir.exists() && !dir.mkdirs()) throw new IOException("无法创建解压目录：" + dir);
         byte[] buf = new byte[8192];
         try (ZipInputStream zis = new ZipInputStream(new BufferedInputStream(new java.io.FileInputStream(zip)))) {
             ZipEntry e;
             while ((e = zis.getNextEntry()) != null) {
                 if (e.isDirectory()) continue;
-                String name = new File(e.getName()).getName();
-                if (!isSubtitleFile(name)) continue;
-                File outFile = uniqueFile(dir, safeName(name));
+                String safePath = safeArchivePath(e.getName());
+                if (safePath.length() == 0) continue;
+                File outFile = safeArchiveOutputFile(dir, safePath);
+                File parent = outFile.getParentFile();
+                if (parent != null && !parent.exists() && !parent.mkdirs()) throw new IOException("无法创建目录：" + parent);
+                outFile = uniqueFile(parent == null ? dir : parent, outFile.getName());
                 try (FileOutputStream out = new FileOutputStream(outFile)) {
                     int n;
                     while ((n = zis.read(buf)) > 0) out.write(buf, 0, n);
@@ -720,18 +726,21 @@ public class MainActivity extends Activity {
         return count;
     }
 
-    private int unrarSubtitles(File rar) throws IOException, RarException {
+    private int unrarArchive(File rar, File dir) throws IOException, RarException {
         int count = 0;
-        File dir = subtitleDir();
+        if (!dir.exists() && !dir.mkdirs()) throw new IOException("无法创建解压目录：" + dir);
         try (Archive archive = new Archive(rar)) {
             FileHeader header;
             while ((header = archive.nextFileHeader()) != null) {
                 if (header.isDirectory()) continue;
                 String name = header.getFileNameString();
                 if (name == null || name.length() == 0) name = header.getFileNameW();
-                name = new File(name).getName();
-                if (!isSubtitleFile(name)) continue;
-                File outFile = uniqueFile(dir, safeName(name));
+                String safePath = safeArchivePath(name);
+                if (safePath.length() == 0) continue;
+                File outFile = safeArchiveOutputFile(dir, safePath);
+                File parent = outFile.getParentFile();
+                if (parent != null && !parent.exists() && !parent.mkdirs()) throw new IOException("无法创建目录：" + parent);
+                outFile = uniqueFile(parent == null ? dir : parent, outFile.getName());
                 try (FileOutputStream out = new FileOutputStream(outFile)) {
                     archive.extractFile(header, out);
                 }
@@ -741,9 +750,42 @@ public class MainActivity extends Activity {
         return count;
     }
 
-    private static boolean isSubtitleFile(String name) {
-        String lower = name.toLowerCase(Locale.US);
-        return lower.endsWith(".ass") || lower.endsWith(".ssa") || lower.endsWith(".srt") || lower.endsWith(".sup");
+    private File archiveExtractDir(File archiveFile) {
+        String name = archiveFile.getName();
+        int dot = name.lastIndexOf('.');
+        String base = dot > 0 ? name.substring(0, dot) : name;
+        return uniqueDir(subtitleDir(), safeName(base));
+    }
+
+    private static File uniqueDir(File parent, String name) {
+        File dir = new File(parent, name);
+        if (!dir.exists()) return dir;
+        for (int i = 1; ; i++) {
+            dir = new File(parent, name + "_" + i);
+            if (!dir.exists()) return dir;
+        }
+    }
+
+    private static String safeArchivePath(String path) {
+        if (path == null) return "";
+        path = path.replace('\\', '/');
+        String[] parts = path.split("/");
+        StringBuilder out = new StringBuilder();
+        for (String part : parts) {
+            part = safeName(part);
+            if (part.length() == 0 || part.equals(".") || part.equals("..")) continue;
+            if (out.length() > 0) out.append(File.separator);
+            out.append(part);
+        }
+        return out.toString();
+    }
+
+    private static File safeArchiveOutputFile(File dir, String safePath) throws IOException {
+        File out = new File(dir, safePath);
+        String root = dir.getCanonicalPath() + File.separator;
+        String target = out.getCanonicalPath();
+        if (!target.startsWith(root)) throw new IOException("非法压缩包路径：" + safePath);
+        return out;
     }
 
     private static boolean isManagedFile(String name) {
