@@ -792,15 +792,55 @@ public class MainActivity extends Activity {
 
     private int extractArchiveWithP7Zip(File archiveFile, File dir) throws IOException {
         if (!dir.exists() && !dir.mkdirs()) throw new IOException("无法创建解压目录：" + dir);
-        String command = "7z x " + shellQuote(archiveFile.getAbsolutePath()) + " -o" + shellQuote(dir.getAbsolutePath()) + " -y";
-        Log.d(TAG, "p7zip command=" + command.replace(archiveFile.getAbsolutePath(), "<archive>").replace(dir.getAbsolutePath(), "<out>"));
-        int code = P7ZipApi.executeCommand(command);
-        if (code != ExitCode.EXIT_OK && code != ExitCode.EXIT_WARNING) throw new IOException("p7zip exit code=" + code);
-        return countExtractedFiles(dir);
+        File workDir = uniqueDir(getCacheDir(), "p7zip_work");
+        if (!workDir.mkdirs()) throw new IOException("无法创建 p7zip 临时目录：" + workDir);
+        String ext = archiveFile.getName().toLowerCase(Locale.US).endsWith(".7z") ? ".7z" : ".rar";
+        File tempArchive = new File(workDir, "archive" + ext);
+        File tempOut = new File(workDir, "out");
+        if (!tempOut.mkdirs()) throw new IOException("无法创建 p7zip 输出目录：" + tempOut);
+        try {
+            copyFile(archiveFile, tempArchive);
+            String command = "7z x " + shellQuote(tempArchive.getAbsolutePath()) + " -o" + shellQuote(tempOut.getAbsolutePath()) + " -y";
+            Log.d(TAG, "p7zip command=" + command.replace(tempArchive.getAbsolutePath(), "<archive>").replace(tempOut.getAbsolutePath(), "<out>"));
+            int code = P7ZipApi.executeCommand(command);
+            if (code != ExitCode.EXIT_OK && code != ExitCode.EXIT_WARNING) throw new IOException("p7zip exit code=" + code);
+            int copied = copyDirectoryContents(tempOut, dir);
+            return copied > 0 ? copied : countExtractedFiles(dir);
+        } finally {
+            deleteRecursive(workDir);
+        }
     }
 
     private static String shellQuote(String s) {
         return "\"" + s.replace("\\", "\\\\").replace("\"", "\\\"") + "\"";
+    }
+
+    private static void copyFile(File src, File dst) throws IOException {
+        File parent = dst.getParentFile();
+        if (parent != null && !parent.exists() && !parent.mkdirs()) throw new IOException("无法创建目录：" + parent);
+        byte[] buf = new byte[8192];
+        try (InputStream in = new BufferedInputStream(new java.io.FileInputStream(src)); FileOutputStream out = new FileOutputStream(dst)) {
+            int n;
+            while ((n = in.read(buf)) > 0) out.write(buf, 0, n);
+        }
+    }
+
+    private static int copyDirectoryContents(File srcDir, File dstDir) throws IOException {
+        int count = 0;
+        File[] files = srcDir.listFiles();
+        if (files == null) return 0;
+        if (!dstDir.exists() && !dstDir.mkdirs()) throw new IOException("无法创建目录：" + dstDir);
+        for (File file : files) {
+            File out = new File(dstDir, safeName(file.getName()));
+            if (file.isDirectory()) {
+                count += copyDirectoryContents(file, out);
+            } else {
+                out = uniqueFile(dstDir, out.getName());
+                copyFile(file, out);
+                count++;
+            }
+        }
+        return count;
     }
 
     private int extract7zArchive(File sevenZ, File dir) throws IOException {
