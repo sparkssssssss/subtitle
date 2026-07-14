@@ -531,9 +531,12 @@ public class MainActivity extends Activity {
     }
 
     private static String findHrefByAnchorRegex(String html, String anchorStartRegex) {
-        Pattern p = Pattern.compile(anchorStartRegex + ".*?href=[\"']([^\"']+)[\"']", Pattern.CASE_INSENSITIVE | Pattern.DOTALL);
+        Pattern p = Pattern.compile(anchorStartRegex, Pattern.CASE_INSENSITIVE | Pattern.DOTALL);
         Matcher m = p.matcher(html);
-        return m.find() ? absoluteUrl(htmlDecode(m.group(1)).trim()) : null;
+        if (!m.find()) return null;
+        String tag = m.group(0);
+        Matcher href = Pattern.compile("href=[\"']([^\"']+)[\"']", Pattern.CASE_INSENSITIVE).matcher(tag);
+        return href.find() ? absoluteUrl(htmlDecode(href.group(1)).trim()) : null;
     }
 
     private static String findHrefByUrlPart(String html, String urlPart) {
