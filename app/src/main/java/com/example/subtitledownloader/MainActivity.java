@@ -32,6 +32,7 @@ import java.io.IOException;
 import java.io.InputStream;
 import java.net.HttpURLConnection;
 import java.net.URL;
+import java.net.URLDecoder;
 import java.net.URLEncoder;
 import java.text.SimpleDateFormat;
 import java.util.ArrayList;
@@ -594,6 +595,8 @@ public class MainActivity extends Activity {
     }
 
     private static String normalizeDownloadHost(String url) {
+        if (url.startsWith("http://zimuku.org/")) return "https://zimuku.org/" + url.substring("http://zimuku.org/".length());
+        if (url.startsWith("http://s.zimuku.org/")) return "https://s.zimuku.org/" + url.substring("http://s.zimuku.org/".length());
         return url;
     }
 
@@ -718,10 +721,16 @@ public class MainActivity extends Activity {
         String cd = conn.getHeaderField("Content-Disposition");
         if (cd != null) {
             Matcher m = Pattern.compile("filename\\*?=([^;]+)", Pattern.CASE_INSENSITIVE).matcher(cd);
-            if (m.find()) return m.group(1).replace("UTF-8''", "").replace("\"", "").trim();
+            if (m.find()) {
+                String name = m.group(1).replace("UTF-8''", "").replace("\"", "").trim();
+                try { return URLDecoder.decode(name, "UTF-8"); }
+                catch (Exception ignored) { return name; }
+            }
         }
         String path = Uri.parse(url).getLastPathSegment();
-        return path == null || path.length() == 0 ? null : path;
+        if (path == null || path.length() == 0) return null;
+        try { return URLDecoder.decode(path, "UTF-8"); }
+        catch (Exception ignored) { return path; }
     }
 
     private static String absoluteUrl(String href) {
