@@ -54,6 +54,11 @@ import net.lingala.zip4j.exception.ZipException;
 import org.apache.commons.compress.archivers.sevenz.SevenZArchiveEntry;
 import org.apache.commons.compress.archivers.sevenz.SevenZFile;
 
+import org.json.JSONObject;
+import java.io.OutputStream;
+import java.io.BufferedReader;
+import java.io.InputStreamReader;
+
 public class MainActivity extends Activity {
     private static final String TAG = "SubtitleDownloader";
     private static final int REQ_STORAGE = 100;
@@ -428,46 +433,171 @@ public class MainActivity extends Activity {
         }
         return out;
     }
-
-    private void showCaptchaDialog(CaptchaChallenge challenge) {
-        byte[] imageBytes = Base64.decode(challenge.imageBase64, Base64.DEFAULT);
-        Bitmap bitmap = BitmapFactory.decodeByteArray(imageBytes, 0, imageBytes.length);
-
-        LinearLayout box = new LinearLayout(this);
-        box.setOrientation(LinearLayout.VERTICAL);
-        int pad = dp(20);
-        box.setPadding(pad, pad / 2, pad, 0);
-
-        ImageView image = new ImageView(this);
-        image.setImageBitmap(bitmap);
-        image.setAdjustViewBounds(true);
-        box.addView(image);
-
-        EditText input = new EditText(this);
-        input.setHint("输入上方验证码");
-        input.setSingleLine(true);
-        input.setTextColor(0xFF000000);
-        box.addView(input);
-
-        AlertDialog dialog = new AlertDialog.Builder(this)
-                .setTitle("zimuku.org 验证码")
-                .setView(box)
-                .setPositiveButton("提交", null)
-                .setNegativeButton("取消", null)
-                .create();
-        dialog.setOnShowListener(d -> {
-            dialog.getButton(AlertDialog.BUTTON_POSITIVE).setOnClickListener(v -> {
-                String code = input.getText().toString().trim();
-                if (code.length() == 0) {
-                    Toast.makeText(this, "请输入验证码", Toast.LENGTH_SHORT).show();
-                    return;
-                }
-                dialog.dismiss();
-                new CaptchaTask().execute(code, challenge.sourceUrl);
-            });
-        });
-        dialog.show();
+    private interface OcrCallback {
+        void onResult(String result);
     }
+
+	private void requestOcr(String imageBase64, OcrCallback callback) {
+		new AsyncTask<String, Void, String>() {
+
+			private String errorMsg = "";
+
+			@Override
+			protected String doInBackground(String... params) {
+				HttpURLConnection connection = null;
+
+				try {
+					String base64 = params[0];
+
+					if (base64 != null && base64.contains(",")) {
+						base64 = base64.substring(base64.indexOf(",") + 1);
+					}
+
+					URL url = new URL("https://ddd.112114.xyz/ocr/b64/json");
+					connection = (HttpURLConnection) url.openConnection();
+
+					connection.setRequestMethod("POST");
+					connection.setConnectTimeout(15000);
+					connection.setReadTimeout(15000);
+					connection.setDoOutput(true);
+					connection.setDoInput(true);
+					connection.setUseCaches(false);
+					connection.setRequestProperty("Content-Type", "text/plain");
+
+					OutputStream os = connection.getOutputStream();
+					os.write(base64.getBytes("UTF-8"));
+					os.flush();
+					os.close();
+
+					int responseCode = connection.getResponseCode();
+
+					InputStream inputStream;
+					if (responseCode >= 200 && responseCode < 300) {
+						inputStream = connection.getInputStream();
+					} else {
+						inputStream = connection.getErrorStream();
+					}
+
+					BufferedReader reader = new BufferedReader(new InputStreamReader(inputStream, "UTF-8"));
+					StringBuilder response = new StringBuilder();
+					String line;
+
+					while ((line = reader.readLine()) != null) {
+						response.append(line);
+					}
+
+					reader.close();
+
+					String responseBody = response.toString();
+
+					Log.d("OCR", "responseCode: " + responseCode);
+					Log.d("OCR", "responseBody: " + responseBody);
+
+					JSONObject jsonObject = new JSONObject(responseBody);
+
+					int status = jsonObject.optInt("status");
+					String result = jsonObject.optString("result");
+					String msg = jsonObject.optString("msg");
+
+					if (status == 200 && result != null) {
+						return result.trim();
+					} else {
+						errorMsg = msg;
+						return "";
+					}
+
+				} catch (Exception e) {
+					errorMsg = e.getMessage();
+					Log.e("OCR", "request error", e);
+					return "";
+				} finally {
+					if (connection != null) {
+						connection.disconnect();
+					}
+				}
+			}
+
+			@Override
+			protected void onPostExecute(String result) {
+				if (callback != null) {
+					callback.onResult(result);
+				}
+
+				if (result == null || result.length() == 0) {
+					Log.d("OCR", "OCR识别失败或为空: " + errorMsg);
+				}
+			}
+
+		}.execute(imageBase64);
+	}
+
+
+	private void showCaptchaDialog(CaptchaChallenge challenge) {
+		byte[] imageBytes = Base64.decode(challenge.imageBase64, Base64.DEFAULT);
+		Bitmap bitmap = BitmapFactory.decodeByteArray(imageBytes, 0, imageBytes.length);
+
+		LinearLayout box = new LinearLayout(this);
+		box.setOrientation(LinearLayout.VERTICAL);
+		int pad = dp(20);
+		box.setPadding(pad, pad / 2, pad, 0);
+
+		ImageView image = new ImageView(this);
+		image.setImageBitmap(bitmap);
+		image.setAdjustViewBounds(true);
+		box.addView(image);
+
+		EditText input = new EditText(this);
+		input.setHint("输入上方验证码");
+		input.setSingleLine(true);
+		input.setTextColor(0xFF000000);
+		box.addView(input);
+
+		AlertDialog dialog = new AlertDialog.Builder(this)
+				.setTitle("zimuku.org 验证码")
+				.setView(box)
+				.setPositiveButton("提交", null)
+				.setNegativeButton("取消", null)
+				.create();
+
+		dialog.setOnShowListener(d -> {
+			dialog.getButton(AlertDialog.BUTTON_POSITIVE).setOnClickListener(v -> {
+				String code = input.getText().toString().trim();
+
+				if (code.length() == 0) {
+					Toast.makeText(this, "请输入验证码", Toast.LENGTH_SHORT).show();
+					return;
+				}
+
+				dialog.dismiss();
+				new CaptchaTask().execute(code, challenge.sourceUrl);
+			});
+		});
+
+		dialog.show();
+
+		// 弹窗显示后开始 OCR
+		requestOcr(challenge.imageBase64, result -> {
+			if (result != null && result.trim().length() > 0) {
+				String code = result.trim();
+
+				Log.d("OCR", "自动识别验证码: " + code);
+
+				// 可选：先显示到输入框里
+				input.setText(code);
+				input.setSelection(input.getText().length());
+
+				// 如果弹窗还在显示，则自动提交
+				if (dialog.isShowing()) {
+					dialog.dismiss();
+					new CaptchaTask().execute(code, challenge.sourceUrl);
+				}
+			} else {
+				// OCR 没识别出来，不做任何事，继续走原来的手动输入逻辑
+				Log.d("OCR", "OCR结果为空，等待用户手动输入");
+			}
+		});
+	}
+
 
     private int dp(int value) {
         return (int) (value * getResources().getDisplayMetrics().density + 0.5f);
