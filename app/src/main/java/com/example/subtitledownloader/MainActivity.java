@@ -2,6 +2,7 @@ package com.example.subtitledownloader;
 
 import android.Manifest;
 import android.app.Activity;
+import android.app.AlertDialog;
 import android.content.pm.PackageManager;
 import android.net.Uri;
 import android.os.AsyncTask;
@@ -27,7 +28,11 @@ import java.io.InputStream;
 import java.net.HttpURLConnection;
 import java.net.URL;
 import java.net.URLEncoder;
+import java.text.SimpleDateFormat;
 import java.util.ArrayList;
+import java.util.Arrays;
+import java.util.Comparator;
+import java.util.Date;
 import java.util.List;
 import java.util.Locale;
 import java.util.regex.Matcher;
@@ -36,6 +41,7 @@ import java.util.zip.ZipEntry;
 import java.util.zip.ZipInputStream;
 
 import com.github.junrar.Archive;
+import com.github.junrar.exception.RarException;
 import com.github.junrar.rarfile.FileHeader;
 
 public class MainActivity extends Activity {
@@ -43,10 +49,14 @@ public class MainActivity extends Activity {
     private static final String BASE = "https://assrt.net";
     private EditText searchInput;
     private Button searchButton;
+    private Button filesButton;
+    private Button clearButton;
     private TextView statusText;
     private ListView resultList;
     private final ArrayList<SubtitleItem> items = new ArrayList<>();
+    private final ArrayList<File> localFiles = new ArrayList<>();
     private ArrayAdapter<String> adapter;
+    private boolean fileMode = false;
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
@@ -55,6 +65,8 @@ public class MainActivity extends Activity {
 
         searchInput = findViewById(R.id.searchInput);
         searchButton = findViewById(R.id.searchButton);
+        filesButton = findViewById(R.id.filesButton);
+        clearButton = findViewById(R.id.clearButton);
         statusText = findViewById(R.id.statusText);
         resultList = findViewById(R.id.resultList);
 
@@ -62,6 +74,8 @@ public class MainActivity extends Activity {
         resultList.setAdapter(adapter);
 
         searchButton.setOnClickListener(v -> doSearch());
+        filesButton.setOnClickListener(v -> toggleFileMode());
+        clearButton.setOnClickListener(v -> confirmClearSubtitleDir());
         searchInput.setOnEditorActionListener((v, actionId, event) -> {
             if (actionId == EditorInfo.IME_ACTION_SEARCH ||
                     (event != null && event.getKeyCode() == KeyEvent.KEYCODE_ENTER && event.getAction() == KeyEvent.ACTION_UP)) {
@@ -70,7 +84,10 @@ public class MainActivity extends Activity {
             }
             return false;
         });
-        resultList.setOnItemClickListener((parent, view, position, id) -> new DownloadTask().execute(items.get(position)));
+        resultList.setOnItemClickListener((parent, view, position, id) -> {
+            if (fileMode) confirmDeleteFile(localFiles.get(position));
+            else new DownloadTask().execute(items.get(position));
+        });
 
         ensureStoragePermission();
     }
@@ -88,7 +105,94 @@ public class MainActivity extends Activity {
             Toast.makeText(this, "请输入关键词", Toast.LENGTH_SHORT).show();
             return;
         }
+        fileMode = false;
+        filesButton.setText("本地文件");
         new SearchTask().execute(q);
+    }
+
+    private void toggleFileMode() {
+        fileMode = !fileMode;
+        filesButton.setText(fileMode ? "返回搜索" : "本地文件");
+        if (fileMode) loadLocalFiles();
+        else {
+            adapter.clear();
+            for (SubtitleItem item : items) adapter.add(item.title + "\n" + item.url);
+            adapter.notifyDataSetChanged();
+            statusText.setText(items.isEmpty() ? "输入关键词后按确定键搜索。" : "已返回搜索结果。选择一项按确定键下载。");
+        }
+    }
+
+    private void loadLocalFiles() {
+        localFiles.clear();
+        adapter.clear();
+        File dir = subtitleDir();
+        File[] files = dir.listFiles(file -> file.isFile() && isManagedFile(file.getName()));
+        if (files != null) {
+            Arrays.sort(files, Comparator.comparingLong(File::lastModified).reversed());
+            localFiles.addAll(Arrays.asList(files));
+        }
+        for (File file : localFiles) adapter.add(formatFileRow(file));
+        adapter.notifyDataSetChanged();
+        statusText.setText(localFiles.isEmpty()
+                ? "本地目录为空：" + dir.getAbsolutePath()
+                : "本地文件 " + localFiles.size() + " 个。选择文件按确定键删除；也可点清空目录。");
+    }
+
+    private void confirmDeleteFile(File file) {
+        new AlertDialog.Builder(this)
+                .setTitle("删除文件？")
+                .setMessage(file.getName())
+                .setPositiveButton("删除", (dialog, which) -> {
+                    boolean ok = file.delete();
+                    Toast.makeText(this, ok ? "已删除" : "删除失败", Toast.LENGTH_SHORT).show();
+                    loadLocalFiles();
+                })
+                .setNegativeButton("取消", null)
+                .show();
+    }
+
+    private void confirmClearSubtitleDir() {
+        File dir = subtitleDir();
+        File[] files = dir.listFiles(file -> file.isFile() && isManagedFile(file.getName()));
+        int count = files == null ? 0 : files.length;
+        if (count == 0) {
+            Toast.makeText(this, "没有可清理的字幕文件", Toast.LENGTH_SHORT).show();
+            if (fileMode) loadLocalFiles();
+            return;
+        }
+        new AlertDialog.Builder(this)
+                .setTitle("清空字幕目录？")
+                .setMessage("将删除 Download/subtitle/ 下的 " + count + " 个字幕/压缩包文件。")
+                .setPositiveButton("清空", (dialog, which) -> {
+                    int deleted = clearSubtitleFiles();
+                    Toast.makeText(this, "已删除 " + deleted + " 个文件", Toast.LENGTH_SHORT).show();
+                    if (fileMode) loadLocalFiles();
+                    else statusText.setText("已清理 " + deleted + " 个本地字幕文件。");
+                })
+                .setNegativeButton("取消", null)
+                .show();
+    }
+
+    private int clearSubtitleFiles() {
+        File dir = subtitleDir();
+        File[] files = dir.listFiles(file -> file.isFile() && isManagedFile(file.getName()));
+        int deleted = 0;
+        if (files != null) {
+            for (File file : files) if (file.delete()) deleted++;
+        }
+        return deleted;
+    }
+
+    private static String formatFileRow(File file) {
+        String time = new SimpleDateFormat("yyyy-MM-dd HH:mm", Locale.US).format(new Date(file.lastModified()));
+        return file.getName() + "\n" + humanSize(file.length()) + "　" + time;
+    }
+
+    private static String humanSize(long bytes) {
+        if (bytes < 1024) return bytes + " B";
+        double kb = bytes / 1024.0;
+        if (kb < 1024) return String.format(Locale.US, "%.1f KB", kb);
+        return String.format(Locale.US, "%.1f MB", kb / 1024.0);
     }
 
     private class SearchTask extends AsyncTask<String, String, List<SubtitleItem>> {
@@ -163,6 +267,7 @@ public class MainActivity extends Activity {
         @Override protected void onPostExecute(String msg) {
             if (error != null) statusText.setText("下载失败：" + error);
             else statusText.setText(msg);
+            if (fileMode) loadLocalFiles();
         }
     }
 
@@ -260,7 +365,7 @@ public class MainActivity extends Activity {
         return count;
     }
 
-    private int unrarSubtitles(File rar) throws IOException {
+    private int unrarSubtitles(File rar) throws IOException, RarException {
         int count = 0;
         File dir = subtitleDir();
         try (Archive archive = new Archive(rar)) {
@@ -284,6 +389,12 @@ public class MainActivity extends Activity {
     private static boolean isSubtitleFile(String name) {
         String lower = name.toLowerCase(Locale.US);
         return lower.endsWith(".ass") || lower.endsWith(".ssa") || lower.endsWith(".srt");
+    }
+
+    private static boolean isManagedFile(String name) {
+        String lower = name.toLowerCase(Locale.US);
+        return lower.endsWith(".ass") || lower.endsWith(".ssa") || lower.endsWith(".srt") ||
+                lower.endsWith(".zip") || lower.endsWith(".rar") || lower.endsWith(".7z");
     }
 
     private static String fileNameFromConnection(HttpURLConnection conn, String url) {
