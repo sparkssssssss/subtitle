@@ -4,6 +4,12 @@
 
 用户反馈：在“解析下载地址”阶段反复弹出验证码，输入后仍继续弹，形成循环。
 
+后续排查需要借助 ADB logcat，因为这类问题常见于：
+
+- 验证码提交实际上没有成功；
+- 验证码通过了，但后续下载请求丢失了关键 Cookie / Referer / 跳转链；
+- 下载子域或中转页返回的是新的验证页，而不是实际文件。
+
 ## 原因分析
 
 当前下载流程为：
@@ -40,6 +46,29 @@
 
 - `app/src/main/java/com/example/subtitledownloader/MainActivity.java`
 - `zimuku.org 验证码循环修复分析报告.md`
+
+## 下一步排查建议
+
+请抓取设备的 logcat，重点关注 `SubtitleDownloader` 标签。建议命令：
+
+```bash
+adb logcat -v time | grep SubtitleDownloader
+```
+
+或者：
+
+```bash
+adb logcat -v time | grep -E "SubtitleDownloader|chromium|WebView|Cookie"
+```
+
+重点看这些信息：
+
+- 请求 URL 和 Referer
+- HTTP 状态码
+- `Content-Type`
+- `Location`
+- 当前 Cookie 的键名集合
+- 是否在 `resolveDownloadData()` 的某一层再次命中验证码
 
 ## 验证限制
 

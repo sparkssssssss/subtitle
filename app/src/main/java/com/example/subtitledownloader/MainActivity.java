@@ -13,6 +13,7 @@ import android.os.Bundle;
 import android.os.Environment;
 import android.text.Html;
 import android.util.Base64;
+import android.util.Log;
 import android.view.KeyEvent;
 import android.view.inputmethod.EditorInfo;
 import android.widget.ArrayAdapter;
@@ -51,6 +52,7 @@ import com.github.junrar.exception.RarException;
 import com.github.junrar.rarfile.FileHeader;
 
 public class MainActivity extends Activity {
+    private static final String TAG = "SubtitleDownloader";
     private static final int REQ_STORAGE = 100;
     private static final String BASE = "https://zimuku.org";
     private static String cookieHeader = "";
@@ -275,6 +277,7 @@ public class MainActivity extends Activity {
                     else throw new IOException("未在详情页找到下载链接");
                 }
                 publishProgress("解析下载链接...");
+                Log.d(TAG, "download detail=" + item.url + " firstUrl=" + redactUrl(downloadUrl));
                 return downloadFromUrl(item, downloadUrl);
             } catch (CaptchaRequiredException e) {
                 captcha = e.challenge;
@@ -290,6 +293,7 @@ public class MainActivity extends Activity {
             if (captcha != null) {
                 pendingDownloadItem = item;
                 pendingDownloadUrl = captcha.sourceUrl;
+                Log.d(TAG, "download captcha source=" + redactUrl(pendingDownloadUrl));
                 statusText.setText("下载时需要验证码，请输入后继续下载。 ");
                 showCaptchaDialog(captcha);
             } else if (error != null) statusText.setText("下载失败：" + error);
@@ -312,6 +316,7 @@ public class MainActivity extends Activity {
                 item = params[0].item;
                 url = params[0].url;
                 publishProgress("继续下载...");
+                Log.d(TAG, "resume download url=" + redactUrl(url));
                 return downloadFromUrl(item, url);
             } catch (CaptchaRequiredException e) {
                 captcha = e.challenge;
@@ -327,6 +332,7 @@ public class MainActivity extends Activity {
             if (captcha != null) {
                 pendingDownloadItem = item;
                 pendingDownloadUrl = captcha.sourceUrl != null && captcha.sourceUrl.length() > 0 ? captcha.sourceUrl : url;
+                Log.d(TAG, "resume captcha again source=" + redactUrl(pendingDownloadUrl));
                 statusText.setText("验证码仍未通过或已过期，请重新输入。 ");
                 showCaptchaDialog(captcha);
             } else if (error != null) statusText.setText("下载失败：" + error);
@@ -336,7 +342,9 @@ public class MainActivity extends Activity {
     }
 
     private String downloadFromUrl(SubtitleItem item, String downloadUrl) throws IOException, RarException {
+        Log.d(TAG, "downloadFromUrl start=" + redactUrl(downloadUrl));
         HttpData downloadData = resolveDownloadData(downloadUrl);
+        Log.d(TAG, "downloadFromUrl data contentType=" + downloadData.contentType + " fileName=" + downloadData.fileName + " bytes=" + downloadData.data.length);
         DownloadedFile file = downloadToSubtitleFolder(downloadData, safeName(item.title));
         String lowerName = file.file.getName().toLowerCase(Locale.US);
         if (lowerName.endsWith(".zip")) {
@@ -429,10 +437,12 @@ public class MainActivity extends Activity {
                 if (sourceUrl != null && sourceUrl.length() > 0) {
                     putCookie("srcurl", stringToHex(sourceUrl));
                 }
+                Log.d(TAG, "submit captcha source=" + redactUrl(sourceUrl) + " cookieKeys=" + cookieKeys());
                 String verifyUrl = BASE + "/?security_verify_img=" + stringToHex(codes[0]);
                 HttpData response = httpDataAllowHttpError(verifyUrl);
                 String html = new String(response.data, "UTF-8");
                 nextCaptcha = parseCaptcha(html, sourceUrl != null && sourceUrl.length() > 0 ? sourceUrl : verifyUrl);
+                Log.d(TAG, "submit captcha response contentType=" + response.contentType + " bytes=" + response.data.length + " nextCaptcha=" + (nextCaptcha != null) + " cookieKeys=" + cookieKeys());
                 if (nextCaptcha != null) throw new IOException("验证码可能不正确或已过期");
                 return true;
             } catch (Exception e) {
@@ -578,6 +588,7 @@ public class MainActivity extends Activity {
         for (int redirect = 0; redirect < 6; redirect++) {
             HttpURLConnection conn = (HttpURLConnection) new URL(current).openConnection();
             conn.setInstanceFollowRedirects(false);
+            Log.d(TAG, "HTTP request url=" + redactUrl(current) + " referer=" + redactUrl(currentReferer) + " cookieKeys=" + cookieKeys());
             conn.setConnectTimeout(15000);
             conn.setReadTimeout(30000);
             conn.setRequestProperty("User-Agent", "Mozilla/5.0 (Android TV) SubtitleDownloader/1.0");
@@ -586,6 +597,7 @@ public class MainActivity extends Activity {
             if (cookieHeader.length() > 0) conn.setRequestProperty("Cookie", cookieHeader);
             int code = conn.getResponseCode();
             rememberCookies(conn);
+            Log.d(TAG, "HTTP response code=" + code + " url=" + redactUrl(current) + " contentType=" + conn.getContentType() + " location=" + redactUrl(conn.getHeaderField("Location")) + " fileName=" + conn.getHeaderField("Content-Disposition") + " cookieKeys=" + cookieKeys());
             if (isRedirect(code)) {
                 String location = conn.getHeaderField("Location");
                 if (location == null || location.length() == 0) throw new IOException("HTTP " + code + " 缺少 Location：" + current);
@@ -622,7 +634,10 @@ public class MainActivity extends Activity {
             if (!looksLikeHtml(data)) return data;
             String html = new String(data.data, "UTF-8");
             CaptchaChallenge captcha = parseCaptcha(html, current);
-            if (captcha != null) throw new CaptchaRequiredException(captcha);
+            if (captcha != null) {
+                Log.d(TAG, "resolveDownloadData captcha at depth=" + depth + " url=" + redactUrl(current));
+                throw new CaptchaRequiredException(captcha);
+            }
             String next = findDownloadUrl(html);
             if (next == null || next.equals(current)) throw new IOException("下载页里没有找到真实字幕文件链接");
             referer = current;
@@ -734,7 +749,11 @@ public class MainActivity extends Activity {
             if (key == null || !"Set-Cookie".equalsIgnoreCase(key)) continue;
             List<String> cookies = conn.getHeaderFields().get(key);
             if (cookies == null || cookies.isEmpty()) continue;
-            for (String cookie : cookies) putCookiePair(cookie.split(";", 2)[0]);
+            for (String cookie : cookies) {
+                String pair = cookie.split(";", 2)[0];
+                Log.d(TAG, "Set-Cookie key=" + pair.split("=", 2)[0]);
+                putCookiePair(pair);
+            }
         }
     }
 
@@ -760,6 +779,23 @@ public class MainActivity extends Activity {
             sb.append(cookie);
         }
         return sb.toString();
+    }
+
+    private static String cookieKeys() {
+        if (cookieHeader.length() == 0) return "none";
+        StringBuilder sb = new StringBuilder();
+        String[] parts = cookieHeader.split("; ");
+        for (String part : parts) {
+            if (sb.length() > 0) sb.append(',');
+            sb.append(part.split("=", 2)[0]);
+        }
+        return sb.toString();
+    }
+
+    private static String redactUrl(String url) {
+        if (url == null) return "";
+        return url.replaceAll("/download/[^/]+", "/download/<token>")
+                .replaceAll("security_verify_img=[0-9a-fA-F]+", "security_verify_img=<hex>");
     }
 
     private static String fileNameFromConnection(HttpURLConnection conn, String url) {
