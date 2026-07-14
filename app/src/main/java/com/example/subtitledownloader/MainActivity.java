@@ -4,17 +4,22 @@ import android.Manifest;
 import android.app.Activity;
 import android.app.AlertDialog;
 import android.content.pm.PackageManager;
+import android.graphics.Bitmap;
+import android.graphics.BitmapFactory;
 import android.net.Uri;
 import android.os.AsyncTask;
 import android.os.Build;
 import android.os.Bundle;
 import android.os.Environment;
 import android.text.Html;
+import android.util.Base64;
 import android.view.KeyEvent;
 import android.view.inputmethod.EditorInfo;
 import android.widget.ArrayAdapter;
 import android.widget.Button;
 import android.widget.EditText;
+import android.widget.ImageView;
+import android.widget.LinearLayout;
 import android.widget.ListView;
 import android.widget.TextView;
 import android.widget.Toast;
@@ -47,6 +52,7 @@ import com.github.junrar.rarfile.FileHeader;
 public class MainActivity extends Activity {
     private static final int REQ_STORAGE = 100;
     private static final String BASE = "https://zimuku.org";
+    private static String cookieHeader = "";
     private EditText searchInput;
     private Button searchButton;
     private Button filesButton;
@@ -57,6 +63,7 @@ public class MainActivity extends Activity {
     private final ArrayList<File> localFiles = new ArrayList<>();
     private ArrayAdapter<String> adapter;
     private boolean fileMode = false;
+    private String pendingSearchQuery = "";
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
@@ -107,6 +114,7 @@ public class MainActivity extends Activity {
         }
         fileMode = false;
         filesButton.setText("本地文件");
+        pendingSearchQuery = q;
         new SearchTask().execute(q);
     }
 
@@ -197,6 +205,7 @@ public class MainActivity extends Activity {
 
     private class SearchTask extends AsyncTask<String, String, List<SubtitleItem>> {
         private String error;
+        private CaptchaChallenge captcha;
 
         @Override protected void onPreExecute() {
             items.clear();
@@ -210,7 +219,10 @@ public class MainActivity extends Activity {
                 IOException lastError = null;
                 for (String url : zimukuSearchUrls(q)) {
                     try {
-                        String html = httpGet(url);
+                        HttpData page = httpData(url);
+                        String html = new String(page.data, "UTF-8");
+                        captcha = parseCaptcha(html, url);
+                        if (captcha != null) return new ArrayList<>();
                         List<SubtitleItem> parsed = parseSearch(html);
                         if (!parsed.isEmpty()) return parsed;
                     } catch (IOException e) {
@@ -230,8 +242,11 @@ public class MainActivity extends Activity {
             adapter.clear();
             for (SubtitleItem item : items) adapter.add(item.title + "\n" + item.url);
             adapter.notifyDataSetChanged();
-            if (error != null) statusText.setText("搜索失败：" + error);
-            else if (items.isEmpty()) statusText.setText("没有找到结果。zimuku.org 页面变化或需要验证码时可能无法搜索。");
+            if (captcha != null) {
+                statusText.setText("zimuku.org 需要验证码，请手动输入。 ");
+                showCaptchaDialog(captcha);
+            } else if (error != null) statusText.setText("搜索失败：" + error);
+            else if (items.isEmpty()) statusText.setText("没有找到结果。zimuku.org 页面变化时可能需要调整解析规则。");
             else statusText.setText("找到 " + items.size() + " 个结果，选择一项按确定键下载。仅显示前 30 项。");
         }
     }
@@ -300,12 +315,99 @@ public class MainActivity extends Activity {
         return out;
     }
 
+    private void showCaptchaDialog(CaptchaChallenge challenge) {
+        byte[] imageBytes = Base64.decode(challenge.imageBase64, Base64.DEFAULT);
+        Bitmap bitmap = BitmapFactory.decodeByteArray(imageBytes, 0, imageBytes.length);
+
+        LinearLayout box = new LinearLayout(this);
+        box.setOrientation(LinearLayout.VERTICAL);
+        int pad = dp(20);
+        box.setPadding(pad, pad / 2, pad, 0);
+
+        ImageView image = new ImageView(this);
+        image.setImageBitmap(bitmap);
+        image.setAdjustViewBounds(true);
+        box.addView(image);
+
+        EditText input = new EditText(this);
+        input.setHint("输入上方验证码");
+        input.setSingleLine(true);
+        input.setTextColor(0xFF000000);
+        box.addView(input);
+
+        AlertDialog dialog = new AlertDialog.Builder(this)
+                .setTitle("zimuku.org 验证码")
+                .setView(box)
+                .setPositiveButton("提交", null)
+                .setNegativeButton("取消", null)
+                .create();
+        dialog.setOnShowListener(d -> {
+            dialog.getButton(AlertDialog.BUTTON_POSITIVE).setOnClickListener(v -> {
+                String code = input.getText().toString().trim();
+                if (code.length() == 0) {
+                    Toast.makeText(this, "请输入验证码", Toast.LENGTH_SHORT).show();
+                    return;
+                }
+                dialog.dismiss();
+                new CaptchaTask().execute(code, challenge.sourceUrl);
+            });
+        });
+        dialog.show();
+    }
+
+    private int dp(int value) {
+        return (int) (value * getResources().getDisplayMetrics().density + 0.5f);
+    }
+
+    private class CaptchaTask extends AsyncTask<String, Void, Boolean> {
+        private String error;
+
+        @Override protected void onPreExecute() { statusText.setText("正在提交验证码..."); }
+
+        @Override protected Boolean doInBackground(String... codes) {
+            try {
+                if (codes.length > 1 && codes[1] != null && codes[1].length() > 0) {
+                    putCookie("srcurl", stringToHex(codes[1]));
+                }
+                String verifyUrl = BASE + "/?security_verify_img=" + stringToHex(codes[0]);
+                String html = httpGet(verifyUrl);
+                if (parseCaptcha(html, verifyUrl) != null) throw new IOException("验证码可能不正确");
+                return true;
+            } catch (Exception e) {
+                error = e.getMessage();
+                return false;
+            }
+        }
+
+        @Override protected void onPostExecute(Boolean ok) {
+            if (ok) {
+                statusText.setText("验证码已提交，正在重试搜索...");
+                if (pendingSearchQuery.length() > 0) new SearchTask().execute(pendingSearchQuery);
+            } else {
+                statusText.setText("验证码提交失败：" + error);
+            }
+        }
+    }
+
     private static String[] zimukuSearchUrls(String encodedQuery) {
         return new String[]{
                 BASE + "/search?q=" + encodedQuery,
                 BASE + "/search?keyword=" + encodedQuery,
                 BASE + "/search/" + encodedQuery
         };
+    }
+
+    private static CaptchaChallenge parseCaptcha(String html, String sourceUrl) {
+        if (!html.contains("security_verify_img") && !html.contains("网站防火墙")) return null;
+        Matcher m = Pattern.compile("src=[\"']data:image/[^;]+;base64,([^\"']+)[\"']", Pattern.CASE_INSENSITIVE).matcher(html);
+        if (!m.find()) return null;
+        return new CaptchaChallenge(m.group(1), sourceUrl);
+    }
+
+    private static String stringToHex(String str) {
+        StringBuilder sb = new StringBuilder();
+        for (int i = 0; i < str.length(); i++) sb.append(Integer.toHexString(str.charAt(i)));
+        return sb.toString();
     }
 
     private static boolean looksLikeZimukuDetail(String lowerUrl) {
@@ -336,25 +438,36 @@ public class MainActivity extends Activity {
         return lower.contains("/download") || lower.matches(".*\\.(zip|rar|7z|ass|ssa|srt)(\\?.*)?$");
     }
 
-    private static String httpGet(String url) throws IOException { return new String(httpBytes(url).data, "UTF-8"); }
+    private static String httpGet(String url) throws IOException { return new String(httpData(url).data, "UTF-8"); }
 
-    private static HttpData httpBytes(String url) throws IOException {
+    private static HttpData httpBytes(String url) throws IOException { return httpData(url); }
+
+    private static HttpData httpData(String url) throws IOException {
         HttpURLConnection conn = (HttpURLConnection) new URL(url).openConnection();
         conn.setInstanceFollowRedirects(true);
         conn.setConnectTimeout(15000);
         conn.setReadTimeout(30000);
         conn.setRequestProperty("User-Agent", "Mozilla/5.0 (Android TV) SubtitleDownloader/1.0");
         conn.setRequestProperty("Accept", "text/html,application/xhtml+xml,application/xml,application/zip,*/*");
+        if (cookieHeader.length() > 0) conn.setRequestProperty("Cookie", cookieHeader);
         int code = conn.getResponseCode();
-        if (code < 200 || code >= 300) throw new IOException("HTTP " + code + "：" + url);
+        rememberCookies(conn);
         ByteArrayOutputStream bos = new ByteArrayOutputStream();
-        try (InputStream in = new BufferedInputStream(conn.getInputStream())) {
-            byte[] buf = new byte[8192];
-            int n;
-            while ((n = in.read(buf)) >= 0) bos.write(buf, 0, n);
+        InputStream raw = (code >= 200 && code < 300) ? conn.getInputStream() : conn.getErrorStream();
+        if (raw != null) {
+            try (InputStream in = new BufferedInputStream(raw)) {
+                byte[] buf = new byte[8192];
+                int n;
+                while ((n = in.read(buf)) >= 0) bos.write(buf, 0, n);
+            }
+        }
+        byte[] body = bos.toByteArray();
+        if (code < 200 || code >= 300) {
+            String text = new String(body, "UTF-8");
+            if (parseCaptcha(text, url) == null) throw new IOException("HTTP " + code + "：" + url);
         }
         String name = fileNameFromConnection(conn, url);
-        return new HttpData(bos.toByteArray(), name);
+        return new HttpData(body, name);
     }
 
     private DownloadedFile downloadToSubtitleFolder(String url, String fallbackName) throws IOException {
@@ -421,6 +534,36 @@ public class MainActivity extends Activity {
         String lower = name.toLowerCase(Locale.US);
         return lower.endsWith(".ass") || lower.endsWith(".ssa") || lower.endsWith(".srt") ||
                 lower.endsWith(".zip") || lower.endsWith(".rar") || lower.endsWith(".7z");
+    }
+
+    private static void rememberCookies(HttpURLConnection conn) {
+        List<String> cookies = conn.getHeaderFields().get("Set-Cookie");
+        if (cookies == null || cookies.isEmpty()) return;
+        for (String cookie : cookies) putCookiePair(cookie.split(";", 2)[0]);
+    }
+
+    private static void putCookie(String key, String value) {
+        putCookiePair(key + "=" + value);
+    }
+
+    private static void putCookiePair(String pair) {
+        String key = pair.split("=", 2)[0];
+        ArrayList<String> merged = new ArrayList<>();
+        if (cookieHeader.length() > 0) merged.addAll(Arrays.asList(cookieHeader.split("; ")));
+        for (int i = merged.size() - 1; i >= 0; i--) {
+            if (merged.get(i).startsWith(key + "=")) merged.remove(i);
+        }
+        merged.add(pair);
+        cookieHeader = joinCookies(merged);
+    }
+
+    private static String joinCookies(List<String> cookies) {
+        StringBuilder sb = new StringBuilder();
+        for (String cookie : cookies) {
+            if (sb.length() > 0) sb.append("; ");
+            sb.append(cookie);
+        }
+        return sb.toString();
     }
 
     private static String fileNameFromConnection(HttpURLConnection conn, String url) {
@@ -493,6 +636,15 @@ public class MainActivity extends Activity {
         final byte[] data;
         final String fileName;
         HttpData(byte[] data, String fileName) { this.data = data; this.fileName = fileName; }
+    }
+
+    private static class CaptchaChallenge {
+        final String imageBase64;
+        final String sourceUrl;
+        CaptchaChallenge(String imageBase64, String sourceUrl) {
+            this.imageBase64 = imageBase64;
+            this.sourceUrl = sourceUrl;
+        }
     }
 
     private static class DownloadedFile {
