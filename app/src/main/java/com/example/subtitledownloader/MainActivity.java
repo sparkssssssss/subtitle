@@ -370,7 +370,8 @@ public class MainActivity extends Activity {
                     putCookie("srcurl", stringToHex(codes[1]));
                 }
                 String verifyUrl = BASE + "/?security_verify_img=" + stringToHex(codes[0]);
-                String html = httpGet(verifyUrl);
+                HttpData response = httpDataAllowHttpError(verifyUrl);
+                String html = new String(response.data, "UTF-8");
                 if (parseCaptcha(html, verifyUrl) != null) throw new IOException("验证码可能不正确");
                 return true;
             } catch (Exception e) {
@@ -442,7 +443,11 @@ public class MainActivity extends Activity {
 
     private static HttpData httpBytes(String url) throws IOException { return httpData(url); }
 
-    private static HttpData httpData(String url) throws IOException {
+    private static HttpData httpData(String url) throws IOException { return httpData(url, false); }
+
+    private static HttpData httpDataAllowHttpError(String url) throws IOException { return httpData(url, true); }
+
+    private static HttpData httpData(String url, boolean allowHttpError) throws IOException {
         HttpURLConnection conn = (HttpURLConnection) new URL(url).openConnection();
         conn.setInstanceFollowRedirects(true);
         conn.setConnectTimeout(15000);
@@ -462,7 +467,7 @@ public class MainActivity extends Activity {
             }
         }
         byte[] body = bos.toByteArray();
-        if (code < 200 || code >= 300) {
+        if (!allowHttpError && (code < 200 || code >= 300)) {
             String text = new String(body, "UTF-8");
             if (parseCaptcha(text, url) == null) throw new IOException("HTTP " + code + "：" + url);
         }
