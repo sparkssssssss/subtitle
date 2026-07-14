@@ -49,6 +49,8 @@ import com.github.junrar.exception.RarException;
 import com.github.junrar.rarfile.FileHeader;
 import net.lingala.zip4j.ZipFile;
 import net.lingala.zip4j.exception.ZipException;
+import org.apache.commons.compress.archivers.sevenz.SevenZArchiveEntry;
+import org.apache.commons.compress.archivers.sevenz.SevenZFile;
 
 public class MainActivity extends Activity {
     private static final String TAG = "SubtitleDownloader";
@@ -385,9 +387,16 @@ public class MainActivity extends Activity {
                         + "\n文件：" + file.displayPath;
             }
         } else if (lowerName.endsWith(".7z")) {
-            return "已下载 7Z 压缩包，但当前内置组件暂不支持 7Z 自动解压。"
-                    + "\n文件已保留：" + file.displayPath
-                    + "\n建议：后续接入 Android 原生 p7zip/libarchive，或先用外部解压工具处理。";
+            File extractDir = archiveExtractDir(file.file);
+            try {
+                int count = extract7zArchive(file.file, extractDir);
+                if (count > 0) return "已下载并解压 7Z 中的 " + count + " 个文件：" + extractDir.getAbsolutePath();
+                return "已下载 7Z，但压缩包里没有可解压文件：" + file.displayPath;
+            } catch (Exception sevenZError) {
+                return "已下载 7Z，但自动解压失败：" + sevenZError.getMessage()
+                        + "\n文件类型：" + archiveType(file.file)
+                        + "\n文件：" + file.displayPath;
+            }
         }
         return "已下载到：" + file.displayPath;
     }
@@ -770,6 +779,35 @@ public class MainActivity extends Activity {
                 throw new IOException(second.getMessage(), second);
             }
         }
+    }
+
+    private int extract7zArchive(File sevenZ, File dir) throws IOException {
+        int count = 0;
+        if (!dir.exists() && !dir.mkdirs()) throw new IOException("无法创建解压目录：" + dir);
+        byte[] buffer = new byte[8192];
+        try (SevenZFile sevenZFile = new SevenZFile(sevenZ)) {
+            SevenZArchiveEntry entry;
+            while ((entry = sevenZFile.getNextEntry()) != null) {
+                if (entry.isDirectory()) continue;
+                String safePath = safeArchivePath(entry.getName());
+                if (safePath.length() == 0) continue;
+                File outFile = safeArchiveOutputFile(dir, safePath);
+                File parent = outFile.getParentFile();
+                if (parent != null && !parent.exists() && !parent.mkdirs()) throw new IOException("无法创建目录：" + parent);
+                outFile = uniqueFile(parent == null ? dir : parent, outFile.getName());
+                try (FileOutputStream out = new FileOutputStream(outFile)) {
+                    long remaining = entry.getSize();
+                    while (remaining > 0) {
+                        int read = sevenZFile.read(buffer, 0, (int) Math.min(buffer.length, remaining));
+                        if (read < 0) break;
+                        out.write(buffer, 0, read);
+                        remaining -= read;
+                    }
+                }
+                count++;
+            }
+        }
+        return count;
     }
 
     private int unrarArchive(File rar, File dir) throws IOException, RarException {
