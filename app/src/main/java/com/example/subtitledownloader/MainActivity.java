@@ -138,7 +138,7 @@ public class MainActivity extends Activity {
         localFiles.clear();
         adapter.clear();
         File dir = subtitleDir();
-        File[] files = dir.listFiles(file -> file.isFile() && isManagedFile(file.getName()));
+        File[] files = dir.listFiles();
         if (files != null) {
             Arrays.sort(files, Comparator.comparingLong(File::lastModified).reversed());
             localFiles.addAll(Arrays.asList(files));
@@ -147,7 +147,7 @@ public class MainActivity extends Activity {
         adapter.notifyDataSetChanged();
         statusText.setText(localFiles.isEmpty()
                 ? "本地目录为空：" + dir.getAbsolutePath()
-                : "本地文件 " + localFiles.size() + " 个。选择文件按确定键删除；也可点清空目录。");
+                : "本地项目 " + localFiles.size() + " 个。选择文件/目录按确定键删除；也可点清空目录。");
     }
 
     private void confirmDeleteFile(File file) {
@@ -155,8 +155,8 @@ public class MainActivity extends Activity {
                 .setTitle("删除文件？")
                 .setMessage(file.getName())
                 .setPositiveButton("删除", (dialog, which) -> {
-                    boolean ok = file.delete();
-                    Toast.makeText(this, ok ? "已删除" : "删除失败", Toast.LENGTH_SHORT).show();
+                    int deleted = deleteRecursive(file);
+                    Toast.makeText(this, deleted > 0 ? "已删除 " + deleted + " 项" : "删除失败", Toast.LENGTH_SHORT).show();
                     loadLocalFiles();
                 })
                 .setNegativeButton("取消", null)
@@ -165,39 +165,51 @@ public class MainActivity extends Activity {
 
     private void confirmClearSubtitleDir() {
         File dir = subtitleDir();
-        File[] files = dir.listFiles(file -> file.isFile() && isManagedFile(file.getName()));
+        File[] files = dir.listFiles();
         int count = files == null ? 0 : files.length;
         if (count == 0) {
-            Toast.makeText(this, "没有可清理的字幕文件", Toast.LENGTH_SHORT).show();
+            Toast.makeText(this, "subtitle 目录为空", Toast.LENGTH_SHORT).show();
             if (fileMode) loadLocalFiles();
             return;
         }
         new AlertDialog.Builder(this)
-                .setTitle("清空字幕目录？")
-                .setMessage("将删除 Download/subtitle/ 下的 " + count + " 个字幕/压缩包文件。")
+                .setTitle("清空 subtitle 目录？")
+                .setMessage("将删除 " + dir.getAbsolutePath() + " 下的全部内容，包括文件和解压目录。")
                 .setPositiveButton("清空", (dialog, which) -> {
-                    int deleted = clearSubtitleFiles();
-                    Toast.makeText(this, "已删除 " + deleted + " 个文件", Toast.LENGTH_SHORT).show();
+                    int deleted = clearSubtitleDir();
+                    Toast.makeText(this, "已删除 " + deleted + " 项", Toast.LENGTH_SHORT).show();
                     if (fileMode) loadLocalFiles();
-                    else statusText.setText("已清理 " + deleted + " 个本地字幕文件。");
+                    else statusText.setText("已清空 subtitle 目录，删除 " + deleted + " 项。");
                 })
                 .setNegativeButton("取消", null)
                 .show();
     }
 
-    private int clearSubtitleFiles() {
+    private int clearSubtitleDir() {
         File dir = subtitleDir();
-        File[] files = dir.listFiles(file -> file.isFile() && isManagedFile(file.getName()));
+        File[] files = dir.listFiles();
         int deleted = 0;
         if (files != null) {
-            for (File file : files) if (file.delete()) deleted++;
+            for (File file : files) deleted += deleteRecursive(file);
         }
+        return deleted;
+    }
+
+    private static int deleteRecursive(File file) {
+        int deleted = 0;
+        if (file.isDirectory()) {
+            File[] children = file.listFiles();
+            if (children != null) {
+                for (File child : children) deleted += deleteRecursive(child);
+            }
+        }
+        if (file.delete()) deleted++;
         return deleted;
     }
 
     private static String formatFileRow(File file) {
         String time = new SimpleDateFormat("yyyy-MM-dd HH:mm", Locale.US).format(new Date(file.lastModified()));
-        return file.getName() + "\n" + humanSize(file.length()) + "　" + time;
+        return (file.isDirectory() ? "[目录] " : "") + file.getName() + "\n" + (file.isDirectory() ? "目录" : humanSize(file.length())) + "　" + time;
     }
 
     private static String humanSize(long bytes) {
