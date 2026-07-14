@@ -18,6 +18,11 @@ jobs:
           java-version: '11'
           cache: gradle
 
+      - name: Install Android NDK and CMake
+        run: |
+          yes | sdkmanager --licenses
+          sdkmanager "ndk;21.4.7075529" "cmake;3.22.1"
+
       - name: Make Gradle executable
         run: chmod +x ./gradlew
 

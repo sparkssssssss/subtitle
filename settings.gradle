@@ -6,4 +6,4 @@ pluginManagement {
     }
 }
 rootProject.name = 'SubtitleDownloader'
-include ':app'
+include ':app', ':libp7zip'
