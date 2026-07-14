@@ -18,6 +18,9 @@ jobs:
           java-version: '11'
           cache: gradle
 
+      - name: Set up Android SDK
+        uses: android-actions/setup-android@v3
+
       - name: Install Android NDK and CMake
         run: |
           yes | sdkmanager --licenses
