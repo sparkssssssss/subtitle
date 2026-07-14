@@ -428,8 +428,18 @@ public class MainActivity extends Activity {
     }
 
     private static String findDownloadUrl(String html) {
+        String down1 = findHrefByAnchorRegex(html, "(?is)<a[^>]+id=[\"']down1[\"'][^>]*>");
+        if (down1 != null) return down1;
+
+        String zimukuDownload = findHrefByUrlPart(html, "/download/");
+        if (zimukuDownload != null) return zimukuDownload;
+
+        String dld = findHrefByUrlPart(html, "/dld/");
+        if (dld != null) return dld;
+
         String direct = findDirectFileUrl(html);
         if (direct != null) return direct;
+
         Pattern a = Pattern.compile("<a[^>]+href=[\"']([^\"']+)[\"'][^>]*>(.*?)</a>", Pattern.CASE_INSENSITIVE | Pattern.DOTALL);
         Matcher m = a.matcher(html);
         String firstDownload = null;
@@ -438,9 +448,29 @@ public class MainActivity extends Activity {
             String text = cleanText(m.group(2)).toLowerCase(Locale.US);
             String abs = absoluteUrl(href);
             String lower = abs.toLowerCase(Locale.US);
+            if (lower.contains("/jp.php")) continue;
             if (firstDownload == null && (lower.contains("download") || text.contains("下载") || text.contains("立即"))) firstDownload = abs;
         }
         return firstDownload;
+    }
+
+    private static String findHrefByAnchorRegex(String html, String anchorStartRegex) {
+        Pattern p = Pattern.compile(anchorStartRegex + ".*?href=[\"']([^\"']+)[\"']", Pattern.CASE_INSENSITIVE | Pattern.DOTALL);
+        Matcher m = p.matcher(html);
+        return m.find() ? absoluteUrl(htmlDecode(m.group(1)).trim()) : null;
+    }
+
+    private static String findHrefByUrlPart(String html, String urlPart) {
+        Pattern a = Pattern.compile("<a[^>]+href=[\"']([^\"']+)[\"'][^>]*>(.*?)</a>", Pattern.CASE_INSENSITIVE | Pattern.DOTALL);
+        Matcher m = a.matcher(html);
+        while (m.find()) {
+            String href = htmlDecode(m.group(1)).trim();
+            String abs = absoluteUrl(href);
+            String lower = abs.toLowerCase(Locale.US);
+            if (lower.contains("/jp.php")) continue;
+            if (lower.contains(urlPart)) return abs;
+        }
+        return null;
     }
 
     private static String findDirectFileUrl(String html) {
@@ -468,17 +498,22 @@ public class MainActivity extends Activity {
 
     private static HttpData httpBytes(String url) throws IOException { return httpData(url); }
 
+    private static HttpData httpBytes(String url, String referer) throws IOException { return httpData(url, false, referer); }
+
     private static HttpData httpData(String url) throws IOException { return httpData(url, false); }
 
     private static HttpData httpDataAllowHttpError(String url) throws IOException { return httpData(url, true); }
 
-    private static HttpData httpData(String url, boolean allowHttpError) throws IOException {
+    private static HttpData httpData(String url, boolean allowHttpError) throws IOException { return httpData(url, allowHttpError, null); }
+
+    private static HttpData httpData(String url, boolean allowHttpError, String referer) throws IOException {
         HttpURLConnection conn = (HttpURLConnection) new URL(url).openConnection();
         conn.setInstanceFollowRedirects(true);
         conn.setConnectTimeout(15000);
         conn.setReadTimeout(30000);
         conn.setRequestProperty("User-Agent", "Mozilla/5.0 (Android TV) SubtitleDownloader/1.0");
         conn.setRequestProperty("Accept", "text/html,application/xhtml+xml,application/xml,application/zip,*/*");
+        if (referer != null && referer.length() > 0) conn.setRequestProperty("Referer", referer);
         if (cookieHeader.length() > 0) conn.setRequestProperty("Cookie", cookieHeader);
         int code = conn.getResponseCode();
         rememberCookies(conn);
@@ -502,14 +537,16 @@ public class MainActivity extends Activity {
 
     private static HttpData resolveDownloadData(String url) throws IOException {
         String current = url;
-        for (int depth = 0; depth < 4; depth++) {
-            HttpData data = httpBytes(current);
+        String referer = null;
+        for (int depth = 0; depth < 5; depth++) {
+            HttpData data = httpBytes(current, referer);
             if (!looksLikeHtml(data)) return data;
             String html = new String(data.data, "UTF-8");
             CaptchaChallenge captcha = parseCaptcha(html, current);
             if (captcha != null) throw new IOException("下载时遇到验证码，请先重新搜索并完成验证码");
             String next = findDownloadUrl(html);
             if (next == null || next.equals(current)) throw new IOException("下载页里没有找到真实字幕文件链接");
+            referer = current;
             current = next;
         }
         throw new IOException("下载跳转层级过多");
