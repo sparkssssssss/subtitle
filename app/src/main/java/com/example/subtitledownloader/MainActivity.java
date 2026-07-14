@@ -354,7 +354,7 @@ public class MainActivity extends Activity {
             try {
                 int count = unrarSubtitles(file.file);
                 if (count > 0) return "已下载并解压 RAR 中的 " + count + " 个字幕：" + subtitleDir().getAbsolutePath();
-                return "已下载 RAR，但里面没有找到 ass/ssa/srt 字幕：" + file.displayPath;
+                return "已下载 RAR，但里面没有找到 ass/ssa/srt/sup 字幕：" + file.displayPath;
             } catch (Exception rarError) {
                 return "已下载 RAR，但自动解压失败：" + rarError.getMessage() + "\n文件：" + file.displayPath;
             }
@@ -497,10 +497,7 @@ public class MainActivity extends Activity {
 
     private static boolean looksLikeZimukuDetail(String lowerUrl) {
         if (!lowerUrl.startsWith(BASE)) return false;
-        if (lowerUrl.contains("/search")) return false;
-        return lowerUrl.contains("/detail/") || lowerUrl.contains("/subtitle/") ||
-                lowerUrl.contains("/sub/") || lowerUrl.matches(".*/[0-9]+\\.html(\\?.*)?$") ||
-                lowerUrl.matches(".*/[0-9]+(\\?.*)?$");
+        return lowerUrl.matches(".*/detail/[0-9]+\\.html(\\?.*)?$");
     }
 
     private static String findDownloadUrl(String html) {
@@ -524,7 +521,7 @@ public class MainActivity extends Activity {
             String text = cleanText(m.group(2)).toLowerCase(Locale.US);
             String abs = absoluteUrl(href);
             String lower = abs.toLowerCase(Locale.US);
-            if (lower.contains("/jp.php")) continue;
+            if (shouldIgnoreLink(href, lower)) continue;
             if (firstDownload == null && (lower.contains("download") || text.contains("下载") || text.contains("立即"))) firstDownload = abs;
         }
         return firstDownload;
@@ -546,7 +543,7 @@ public class MainActivity extends Activity {
             String href = htmlDecode(m.group(1)).trim();
             String abs = absoluteUrl(href);
             String lower = abs.toLowerCase(Locale.US);
-            if (lower.contains("/jp.php")) continue;
+            if (shouldIgnoreLink(href, lower)) continue;
             if (lower.contains(urlPart)) return abs;
         }
         return null;
@@ -558,6 +555,7 @@ public class MainActivity extends Activity {
         while (m.find()) {
             String href = htmlDecode(m.group(1)).trim();
             String abs = absoluteUrl(href);
+            if (shouldIgnoreLink(href, abs.toLowerCase(Locale.US))) continue;
             if (looksLikeDirectFile(abs)) return abs;
         }
         return null;
@@ -570,7 +568,14 @@ public class MainActivity extends Activity {
 
     private static boolean looksLikeDirectFile(String url) {
         String lower = url.toLowerCase(Locale.US);
-        return lower.matches(".*\\.(zip|rar|7z|ass|ssa|srt)(\\?.*)?$");
+        return lower.matches(".*\\.(zip|rar|7z|ass|ssa|srt|sup)(\\?.*)?$");
+    }
+
+    private static boolean shouldIgnoreLink(String href, String lowerAbsUrl) {
+        String lowerHref = href == null ? "" : href.toLowerCase(Locale.US).trim();
+        if (lowerHref.startsWith("#") || lowerHref.startsWith("javascript:")) return true;
+        if (lowerAbsUrl.contains("/jp.php")) return true;
+        return lowerAbsUrl.contains("srtku.com") && !lowerAbsUrl.contains("/download/");
     }
 
     private static String httpGet(String url) throws IOException { return new String(httpData(url).data, "UTF-8"); }
@@ -675,7 +680,7 @@ public class MainActivity extends Activity {
         String name = data.fileName != null ? data.fileName : fallbackName;
         name = safeName(name);
         String detectedExt = detectExtension(data.data);
-        if (!name.matches("(?i).*\\.(zip|rar|7z|ass|ssa|srt)$")) name += detectedExt != null ? detectedExt : ".zip";
+        if (!name.matches("(?i).*\\.(zip|rar|7z|ass|ssa|srt|sup)$")) name += detectedExt != null ? detectedExt : ".zip";
 
         File dir = subtitleDir();
         if (!dir.exists() && !dir.mkdirs()) throw new IOException("无法创建目录：" + dir);
@@ -738,12 +743,12 @@ public class MainActivity extends Activity {
 
     private static boolean isSubtitleFile(String name) {
         String lower = name.toLowerCase(Locale.US);
-        return lower.endsWith(".ass") || lower.endsWith(".ssa") || lower.endsWith(".srt");
+        return lower.endsWith(".ass") || lower.endsWith(".ssa") || lower.endsWith(".srt") || lower.endsWith(".sup");
     }
 
     private static boolean isManagedFile(String name) {
         String lower = name.toLowerCase(Locale.US);
-        return lower.endsWith(".ass") || lower.endsWith(".ssa") || lower.endsWith(".srt") ||
+        return lower.endsWith(".ass") || lower.endsWith(".ssa") || lower.endsWith(".srt") || lower.endsWith(".sup") ||
                 lower.endsWith(".zip") || lower.endsWith(".rar") || lower.endsWith(".7z");
     }
 
@@ -859,6 +864,7 @@ public class MainActivity extends Activity {
         String lower = name.toLowerCase(Locale.US);
         if (lower.endsWith(".zip")) return "application/zip";
         if (lower.endsWith(".srt") || lower.endsWith(".ass") || lower.endsWith(".ssa")) return "text/plain";
+        if (lower.endsWith(".sup")) return "application/octet-stream";
         return "application/octet-stream";
     }
 
