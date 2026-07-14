@@ -471,14 +471,18 @@ public class MainActivity extends Activity {
 
 					int responseCode = connection.getResponseCode();
 
-					InputStream inputStream;
-					if (responseCode >= 200 && responseCode < 300) {
-						inputStream = connection.getInputStream();
-					} else {
-						inputStream = connection.getErrorStream();
-					}
+                    InputStream inputStream;
+                    if (responseCode >= 200 && responseCode < 300) {
+                        inputStream = connection.getInputStream();
+                    } else {
+                        inputStream = connection.getErrorStream();
+                    }
+                    if (inputStream == null) {
+                        errorMsg = "OCR HTTP " + responseCode;
+                        return "";
+                    }
 
-					BufferedReader reader = new BufferedReader(new InputStreamReader(inputStream, "UTF-8"));
+                    BufferedReader reader = new BufferedReader(new InputStreamReader(inputStream, "UTF-8"));
 					StringBuilder response = new StringBuilder();
 					String line;
 
@@ -575,28 +579,33 @@ public class MainActivity extends Activity {
 
 		dialog.show();
 
-		// 弹窗显示后开始 OCR
-		requestOcr(challenge.imageBase64, result -> {
-			if (result != null && result.trim().length() > 0) {
-				String code = result.trim();
+        // 弹窗显示后开始 OCR；结果格式可信时才自动提交，否则保留手动输入。
+        requestOcr(challenge.imageBase64, result -> {
+            String code = normalizeCaptchaCode(result);
+            if (isTrustedCaptchaCode(code)) {
+                Log.d("OCR", "自动识别验证码: " + code);
 
-				Log.d("OCR", "自动识别验证码: " + code);
+                input.setText(code);
+                input.setSelection(input.getText().length());
 
-				// 可选：先显示到输入框里
-				input.setText(code);
-				input.setSelection(input.getText().length());
+                if (dialog.isShowing()) {
+                    dialog.dismiss();
+                    new CaptchaTask().execute(code, challenge.sourceUrl);
+                }
+            } else {
+                Log.d("OCR", "OCR结果格式不可信，等待用户手动输入: " + result);
+            }
+        });
+    }
 
-				// 如果弹窗还在显示，则自动提交
-				if (dialog.isShowing()) {
-					dialog.dismiss();
-					new CaptchaTask().execute(code, challenge.sourceUrl);
-				}
-			} else {
-				// OCR 没识别出来，不做任何事，继续走原来的手动输入逻辑
-				Log.d("OCR", "OCR结果为空，等待用户手动输入");
-			}
-		});
-	}
+    private static String normalizeCaptchaCode(String raw) {
+        if (raw == null) return "";
+        return raw.trim().replaceAll("[^A-Za-z0-9]", "");
+    }
+
+    private static boolean isTrustedCaptchaCode(String code) {
+        return code != null && code.matches("[A-Za-z0-9]{4,6}");
+    }
 
 
     private int dp(int value) {
