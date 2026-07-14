@@ -2,14 +2,12 @@ package com.example.subtitledownloader;
 
 import android.Manifest;
 import android.app.Activity;
-import android.content.ContentValues;
 import android.content.pm.PackageManager;
 import android.net.Uri;
 import android.os.AsyncTask;
 import android.os.Build;
 import android.os.Bundle;
 import android.os.Environment;
-import android.provider.MediaStore;
 import android.text.Html;
 import android.view.KeyEvent;
 import android.view.inputmethod.EditorInfo;
@@ -26,7 +24,6 @@ import java.io.File;
 import java.io.FileOutputStream;
 import java.io.IOException;
 import java.io.InputStream;
-import java.io.OutputStream;
 import java.net.HttpURLConnection;
 import java.net.URL;
 import java.net.URLEncoder;
@@ -37,6 +34,9 @@ import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 import java.util.zip.ZipEntry;
 import java.util.zip.ZipInputStream;
+
+import com.github.junrar.Archive;
+import com.github.junrar.rarfile.FileHeader;
 
 public class MainActivity extends Activity {
     private static final int REQ_STORAGE = 100;
@@ -140,9 +140,18 @@ public class MainActivity extends Activity {
                 }
                 publishProgress("下载字幕文件...");
                 DownloadedFile file = downloadToSubtitleFolder(downloadUrl, safeName(item.title));
-                if (file.file != null && file.file.getName().toLowerCase(Locale.US).endsWith(".zip")) {
+                String lowerName = file.file.getName().toLowerCase(Locale.US);
+                if (lowerName.endsWith(".zip")) {
                     int count = unzipSubtitles(file.file);
-                    if (count > 0) return "已下载并解压 " + count + " 个字幕：" + subtitleDir().getAbsolutePath();
+                    if (count > 0) return "已下载并解压 ZIP 中的 " + count + " 个字幕：" + subtitleDir().getAbsolutePath();
+                } else if (lowerName.endsWith(".rar")) {
+                    try {
+                        int count = unrarSubtitles(file.file);
+                        if (count > 0) return "已下载并解压 RAR 中的 " + count + " 个字幕：" + subtitleDir().getAbsolutePath();
+                        return "已下载 RAR，但里面没有找到 ass/ssa/srt 字幕：" + file.displayPath;
+                    } catch (Exception rarError) {
+                        return "已下载 RAR，但自动解压失败：" + rarError.getMessage() + "\n文件：" + file.displayPath;
+                    }
                 }
                 return "已下载到：" + file.displayPath;
             } catch (Exception e) {
@@ -223,25 +232,11 @@ public class MainActivity extends Activity {
         name = safeName(name);
         if (!name.matches("(?i).*\\.(zip|rar|7z|ass|ssa|srt)$")) name += ".zip";
 
-        if (Build.VERSION.SDK_INT >= 29) {
-            ContentValues values = new ContentValues();
-            values.put(MediaStore.Downloads.DISPLAY_NAME, name);
-            values.put(MediaStore.Downloads.MIME_TYPE, mimeFor(name));
-            values.put(MediaStore.Downloads.RELATIVE_PATH, Environment.DIRECTORY_DOWNLOADS + "/subtitle");
-            Uri uri = getContentResolver().insert(MediaStore.Downloads.EXTERNAL_CONTENT_URI, values);
-            if (uri == null) throw new IOException("无法创建下载文件");
-            try (OutputStream out = getContentResolver().openOutputStream(uri)) {
-                if (out == null) throw new IOException("无法写入下载文件");
-                out.write(data.data);
-            }
-            return new DownloadedFile(null, "Download/subtitle/" + name);
-        } else {
-            File dir = subtitleDir();
-            if (!dir.exists() && !dir.mkdirs()) throw new IOException("无法创建目录：" + dir);
-            File file = uniqueFile(dir, name);
-            try (FileOutputStream out = new FileOutputStream(file)) { out.write(data.data); }
-            return new DownloadedFile(file, file.getAbsolutePath());
-        }
+        File dir = subtitleDir();
+        if (!dir.exists() && !dir.mkdirs()) throw new IOException("无法创建目录：" + dir);
+        File file = uniqueFile(dir, name);
+        try (FileOutputStream out = new FileOutputStream(file)) { out.write(data.data); }
+        return new DownloadedFile(file, file.getAbsolutePath());
     }
 
     private int unzipSubtitles(File zip) throws IOException {
@@ -253,8 +248,7 @@ public class MainActivity extends Activity {
             while ((e = zis.getNextEntry()) != null) {
                 if (e.isDirectory()) continue;
                 String name = new File(e.getName()).getName();
-                String lower = name.toLowerCase(Locale.US);
-                if (!(lower.endsWith(".ass") || lower.endsWith(".ssa") || lower.endsWith(".srt"))) continue;
+                if (!isSubtitleFile(name)) continue;
                 File outFile = uniqueFile(dir, safeName(name));
                 try (FileOutputStream out = new FileOutputStream(outFile)) {
                     int n;
@@ -264,6 +258,32 @@ public class MainActivity extends Activity {
             }
         }
         return count;
+    }
+
+    private int unrarSubtitles(File rar) throws IOException {
+        int count = 0;
+        File dir = subtitleDir();
+        try (Archive archive = new Archive(rar)) {
+            FileHeader header;
+            while ((header = archive.nextFileHeader()) != null) {
+                if (header.isDirectory()) continue;
+                String name = header.getFileNameString();
+                if (name == null || name.length() == 0) name = header.getFileNameW();
+                name = new File(name).getName();
+                if (!isSubtitleFile(name)) continue;
+                File outFile = uniqueFile(dir, safeName(name));
+                try (FileOutputStream out = new FileOutputStream(outFile)) {
+                    archive.extractFile(header, out);
+                }
+                count++;
+            }
+        }
+        return count;
+    }
+
+    private static boolean isSubtitleFile(String name) {
+        String lower = name.toLowerCase(Locale.US);
+        return lower.endsWith(".ass") || lower.endsWith(".ssa") || lower.endsWith(".srt");
     }
 
     private static String fileNameFromConnection(HttpURLConnection conn, String url) {

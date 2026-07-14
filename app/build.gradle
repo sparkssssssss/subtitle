@@ -14,3 +14,7 @@ android {
         versionName '1.0'
     }
 }
+
+dependencies {
+    implementation 'com.github.junrar:junrar:7.5.5'
+}

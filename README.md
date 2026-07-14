@@ -8,7 +8,7 @@
 - 输入关键词搜索字幕
 - 用遥控器方向键选择结果，确定键下载
 - 保存目录：公共下载目录下的 `Download/subtitle/`
-- 下载到 `.zip` 时会尝试解压其中的 `.ass`、`.ssa`、`.srt` 文件
+- 下载到 `.zip` / `.rar` 时会尝试解压其中的 `.ass`、`.ssa`、`.srt` 文件
 
 ## 项目结构
 
@@ -39,3 +39,5 @@ app/build/outputs/apk/debug/app-debug.apk
 ## 注意
 
 assrt.net 没有使用官方公开 API，本应用通过网页 HTML 做轻量解析。如果网站页面结构或访问策略变化，可能需要调整 `parseSearch()` / `findDownloadUrl()` 的规则。
+
+RAR 解压通过 `junrar` 实现。部分 RAR5、加密压缩包或特殊压缩包可能无法解压；这种情况下应用会保留原 `.rar` 文件在 `Download/subtitle/`。
