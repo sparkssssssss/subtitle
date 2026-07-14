@@ -267,8 +267,10 @@ public class MainActivity extends Activity {
                     if (looksLikeDownload(item.url)) downloadUrl = item.url;
                     else throw new IOException("未在详情页找到下载链接");
                 }
-                publishProgress("下载字幕文件...");
-                DownloadedFile file = downloadToSubtitleFolder(downloadUrl, safeName(item.title));
+                publishProgress("解析下载链接...");
+                HttpData downloadData = resolveDownloadData(downloadUrl);
+                publishProgress("保存字幕文件...");
+                DownloadedFile file = downloadToSubtitleFolder(downloadData, safeName(item.title));
                 String lowerName = file.file.getName().toLowerCase(Locale.US);
                 if (lowerName.endsWith(".zip")) {
                     int count = unzipSubtitles(file.file);
@@ -426,6 +428,8 @@ public class MainActivity extends Activity {
     }
 
     private static String findDownloadUrl(String html) {
+        String direct = findDirectFileUrl(html);
+        if (direct != null) return direct;
         Pattern a = Pattern.compile("<a[^>]+href=[\"']([^\"']+)[\"'][^>]*>(.*?)</a>", Pattern.CASE_INSENSITIVE | Pattern.DOTALL);
         Matcher m = a.matcher(html);
         String firstDownload = null;
@@ -434,15 +438,30 @@ public class MainActivity extends Activity {
             String text = cleanText(m.group(2)).toLowerCase(Locale.US);
             String abs = absoluteUrl(href);
             String lower = abs.toLowerCase(Locale.US);
-            if (looksLikeDownload(lower)) return abs;
-            if (firstDownload == null && (lower.contains("download") || text.contains("下载"))) firstDownload = abs;
+            if (firstDownload == null && (lower.contains("download") || text.contains("下载") || text.contains("立即"))) firstDownload = abs;
         }
         return firstDownload;
     }
 
+    private static String findDirectFileUrl(String html) {
+        Pattern a = Pattern.compile("<a[^>]+href=[\"']([^\"']+)[\"'][^>]*>(.*?)</a>", Pattern.CASE_INSENSITIVE | Pattern.DOTALL);
+        Matcher m = a.matcher(html);
+        while (m.find()) {
+            String href = htmlDecode(m.group(1)).trim();
+            String abs = absoluteUrl(href);
+            if (looksLikeDirectFile(abs)) return abs;
+        }
+        return null;
+    }
+
     private static boolean looksLikeDownload(String url) {
         String lower = url.toLowerCase(Locale.US);
-        return lower.contains("/download") || lower.matches(".*\\.(zip|rar|7z|ass|ssa|srt)(\\?.*)?$");
+        return lower.contains("/download") || looksLikeDirectFile(lower);
+    }
+
+    private static boolean looksLikeDirectFile(String url) {
+        String lower = url.toLowerCase(Locale.US);
+        return lower.matches(".*\\.(zip|rar|7z|ass|ssa|srt)(\\?.*)?$");
     }
 
     private static String httpGet(String url) throws IOException { return new String(httpData(url).data, "UTF-8"); }
@@ -478,20 +497,53 @@ public class MainActivity extends Activity {
             if (parseCaptcha(text, url) == null) throw new IOException("HTTP " + code + "：" + url);
         }
         String name = fileNameFromConnection(conn, url);
-        return new HttpData(body, name);
+        return new HttpData(body, name, conn.getContentType());
     }
 
-    private DownloadedFile downloadToSubtitleFolder(String url, String fallbackName) throws IOException {
-        HttpData data = httpBytes(url);
-        String name = data.fileName != null ? data.fileName : fallbackName + ".zip";
+    private static HttpData resolveDownloadData(String url) throws IOException {
+        String current = url;
+        for (int depth = 0; depth < 4; depth++) {
+            HttpData data = httpBytes(current);
+            if (!looksLikeHtml(data)) return data;
+            String html = new String(data.data, "UTF-8");
+            CaptchaChallenge captcha = parseCaptcha(html, current);
+            if (captcha != null) throw new IOException("下载时遇到验证码，请先重新搜索并完成验证码");
+            String next = findDownloadUrl(html);
+            if (next == null || next.equals(current)) throw new IOException("下载页里没有找到真实字幕文件链接");
+            current = next;
+        }
+        throw new IOException("下载跳转层级过多");
+    }
+
+    private static boolean looksLikeHtml(HttpData data) {
+        String lower = data.contentType == null ? "" : data.contentType.toLowerCase(Locale.US);
+        if (lower.contains("text/html")) return true;
+        int n = Math.min(data.data.length, 200);
+        String head = new String(data.data, 0, n).trim().toLowerCase(Locale.US);
+        return head.startsWith("<!doctype html") || head.startsWith("<html") || head.contains("<html");
+    }
+
+    private DownloadedFile downloadToSubtitleFolder(HttpData data, String fallbackName) throws IOException {
+        String name = data.fileName != null ? data.fileName : fallbackName;
         name = safeName(name);
-        if (!name.matches("(?i).*\\.(zip|rar|7z|ass|ssa|srt)$")) name += ".zip";
+        String detectedExt = detectExtension(data.data);
+        if (!name.matches("(?i).*\\.(zip|rar|7z|ass|ssa|srt)$")) name += detectedExt != null ? detectedExt : ".zip";
 
         File dir = subtitleDir();
         if (!dir.exists() && !dir.mkdirs()) throw new IOException("无法创建目录：" + dir);
         File file = uniqueFile(dir, name);
         try (FileOutputStream out = new FileOutputStream(file)) { out.write(data.data); }
         return new DownloadedFile(file, file.getAbsolutePath());
+    }
+
+    private static String detectExtension(byte[] data) {
+        if (data.length >= 4 && data[0] == 'P' && data[1] == 'K') return ".zip";
+        if (data.length >= 7 && data[0] == 'R' && data[1] == 'a' && data[2] == 'r' && data[3] == '!') return ".rar";
+        if (data.length >= 6 && (data[0] & 0xff) == 0x37 && (data[1] & 0xff) == 0x7a) return ".7z";
+        String head = new String(data, 0, Math.min(data.length, 200)).toLowerCase(Locale.US);
+        if (head.contains("[script info]") || head.contains("dialogue:")) return ".ass";
+        if (head.matches("(?s)\\s*\\d+\\s*\\r?\\n\\d{2}:\\d{2}:\\d{2}.*")) return ".srt";
+        return null;
     }
 
     private int unzipSubtitles(File zip) throws IOException {
@@ -646,7 +698,12 @@ public class MainActivity extends Activity {
     private static class HttpData {
         final byte[] data;
         final String fileName;
-        HttpData(byte[] data, String fileName) { this.data = data; this.fileName = fileName; }
+        final String contentType;
+        HttpData(byte[] data, String fileName, String contentType) {
+            this.data = data;
+            this.fileName = fileName;
+            this.contentType = contentType;
+        }
     }
 
     private static class CaptchaChallenge {
