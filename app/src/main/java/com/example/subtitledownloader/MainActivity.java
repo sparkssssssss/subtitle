@@ -392,8 +392,8 @@ public class MainActivity extends Activity {
                 int count = extract7zArchive(file.file, extractDir);
                 if (count > 0) return "已下载并解压 7Z 中的 " + count + " 个文件：" + extractDir.getAbsolutePath();
                 return "已下载 7Z，但压缩包里没有可解压文件：" + file.displayPath;
-            } catch (Exception sevenZError) {
-                return "已下载 7Z，但自动解压失败：" + sevenZError.getMessage()
+            } catch (Throwable sevenZError) {
+                return "已下载 7Z，但自动解压失败：" + sevenZError.getClass().getSimpleName() + " " + sevenZError.getMessage()
                         + "\n文件类型：" + archiveType(file.file)
                         + "\n文件：" + file.displayPath;
             }
@@ -797,11 +797,18 @@ public class MainActivity extends Activity {
                 outFile = uniqueFile(parent == null ? dir : parent, outFile.getName());
                 try (FileOutputStream out = new FileOutputStream(outFile)) {
                     long remaining = entry.getSize();
-                    while (remaining > 0) {
-                        int read = sevenZFile.read(buffer, 0, (int) Math.min(buffer.length, remaining));
-                        if (read < 0) break;
-                        out.write(buffer, 0, read);
-                        remaining -= read;
+                    if (remaining >= 0) {
+                        while (remaining > 0) {
+                            int read = sevenZFile.read(buffer, 0, (int) Math.min(buffer.length, remaining));
+                            if (read < 0) break;
+                            out.write(buffer, 0, read);
+                            remaining -= read;
+                        }
+                    } else {
+                        int read;
+                        while ((read = sevenZFile.read(buffer, 0, buffer.length)) > 0) {
+                            out.write(buffer, 0, read);
+                        }
                     }
                 }
                 count++;
