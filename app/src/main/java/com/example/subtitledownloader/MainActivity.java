@@ -66,6 +66,7 @@ public class MainActivity extends Activity {
     private boolean fileMode = false;
     private String pendingSearchQuery = "";
     private SubtitleItem pendingDownloadItem = null;
+    private String pendingDownloadUrl = "";
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
@@ -274,23 +275,7 @@ public class MainActivity extends Activity {
                     else throw new IOException("未在详情页找到下载链接");
                 }
                 publishProgress("解析下载链接...");
-                HttpData downloadData = resolveDownloadData(downloadUrl);
-                publishProgress("保存字幕文件...");
-                DownloadedFile file = downloadToSubtitleFolder(downloadData, safeName(item.title));
-                String lowerName = file.file.getName().toLowerCase(Locale.US);
-                if (lowerName.endsWith(".zip")) {
-                    int count = unzipSubtitles(file.file);
-                    if (count > 0) return "已下载并解压 ZIP 中的 " + count + " 个字幕：" + subtitleDir().getAbsolutePath();
-                } else if (lowerName.endsWith(".rar")) {
-                    try {
-                        int count = unrarSubtitles(file.file);
-                        if (count > 0) return "已下载并解压 RAR 中的 " + count + " 个字幕：" + subtitleDir().getAbsolutePath();
-                        return "已下载 RAR，但里面没有找到 ass/ssa/srt 字幕：" + file.displayPath;
-                    } catch (Exception rarError) {
-                        return "已下载 RAR，但自动解压失败：" + rarError.getMessage() + "\n文件：" + file.displayPath;
-                    }
-                }
-                return "已下载到：" + file.displayPath;
+                return downloadFromUrl(item, downloadUrl);
             } catch (CaptchaRequiredException e) {
                 captcha = e.challenge;
                 error = e.getMessage();
@@ -304,12 +289,69 @@ public class MainActivity extends Activity {
         @Override protected void onPostExecute(String msg) {
             if (captcha != null) {
                 pendingDownloadItem = item;
+                pendingDownloadUrl = captcha.sourceUrl;
                 statusText.setText("下载时需要验证码，请输入后继续下载。 ");
                 showCaptchaDialog(captcha);
             } else if (error != null) statusText.setText("下载失败：" + error);
             else statusText.setText(msg);
             if (fileMode) loadLocalFiles();
         }
+    }
+
+    private class ResumeDownloadTask extends AsyncTask<DownloadResume, String, String> {
+        private String error;
+        private CaptchaChallenge captcha;
+        private SubtitleItem item;
+        private String url;
+
+        @Override protected void onPreExecute() { statusText.setText("继续解析下载链接..."); }
+        @Override protected void onProgressUpdate(String... values) { statusText.setText(values[0]); }
+
+        @Override protected String doInBackground(DownloadResume... params) {
+            try {
+                item = params[0].item;
+                url = params[0].url;
+                publishProgress("继续下载...");
+                return downloadFromUrl(item, url);
+            } catch (CaptchaRequiredException e) {
+                captcha = e.challenge;
+                error = e.getMessage();
+                return null;
+            } catch (Exception e) {
+                error = e.getMessage();
+                return null;
+            }
+        }
+
+        @Override protected void onPostExecute(String msg) {
+            if (captcha != null) {
+                pendingDownloadItem = item;
+                pendingDownloadUrl = captcha.sourceUrl != null && captcha.sourceUrl.length() > 0 ? captcha.sourceUrl : url;
+                statusText.setText("验证码仍未通过或已过期，请重新输入。 ");
+                showCaptchaDialog(captcha);
+            } else if (error != null) statusText.setText("下载失败：" + error);
+            else statusText.setText(msg);
+            if (fileMode) loadLocalFiles();
+        }
+    }
+
+    private String downloadFromUrl(SubtitleItem item, String downloadUrl) throws IOException, RarException {
+        HttpData downloadData = resolveDownloadData(downloadUrl);
+        DownloadedFile file = downloadToSubtitleFolder(downloadData, safeName(item.title));
+        String lowerName = file.file.getName().toLowerCase(Locale.US);
+        if (lowerName.endsWith(".zip")) {
+            int count = unzipSubtitles(file.file);
+            if (count > 0) return "已下载并解压 ZIP 中的 " + count + " 个字幕：" + subtitleDir().getAbsolutePath();
+        } else if (lowerName.endsWith(".rar")) {
+            try {
+                int count = unrarSubtitles(file.file);
+                if (count > 0) return "已下载并解压 RAR 中的 " + count + " 个字幕：" + subtitleDir().getAbsolutePath();
+                return "已下载 RAR，但里面没有找到 ass/ssa/srt 字幕：" + file.displayPath;
+            } catch (Exception rarError) {
+                return "已下载 RAR，但自动解压失败：" + rarError.getMessage() + "\n文件：" + file.displayPath;
+            }
+        }
+        return "已下载到：" + file.displayPath;
     }
 
     private static List<SubtitleItem> parseSearch(String html) {
@@ -403,9 +445,12 @@ public class MainActivity extends Activity {
             if (ok) {
                 if (pendingDownloadItem != null) {
                     SubtitleItem item = pendingDownloadItem;
+                    String resumeUrl = pendingDownloadUrl;
                     pendingDownloadItem = null;
+                    pendingDownloadUrl = "";
                     statusText.setText("验证码已提交，正在继续下载...");
-                    new DownloadTask().execute(item);
+                    if (resumeUrl != null && resumeUrl.length() > 0) new ResumeDownloadTask().execute(new DownloadResume(item, resumeUrl));
+                    else new DownloadTask().execute(item);
                 } else {
                     statusText.setText("验证码已提交，正在重试搜索...");
                     if (pendingSearchQuery.length() > 0) new SearchTask().execute(pendingSearchQuery);
@@ -806,6 +851,15 @@ public class MainActivity extends Activity {
         CaptchaChallenge(String imageBase64, String sourceUrl) {
             this.imageBase64 = imageBase64;
             this.sourceUrl = sourceUrl;
+        }
+    }
+
+    private static class DownloadResume {
+        final SubtitleItem item;
+        final String url;
+        DownloadResume(SubtitleItem item, String url) {
+            this.item = item;
+            this.url = url;
         }
     }
 
