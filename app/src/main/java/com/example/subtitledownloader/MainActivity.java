@@ -361,18 +361,21 @@ public class MainActivity extends Activity {
 
     private class CaptchaTask extends AsyncTask<String, Void, Boolean> {
         private String error;
+        private CaptchaChallenge nextCaptcha;
 
         @Override protected void onPreExecute() { statusText.setText("正在提交验证码..."); }
 
         @Override protected Boolean doInBackground(String... codes) {
             try {
-                if (codes.length > 1 && codes[1] != null && codes[1].length() > 0) {
-                    putCookie("srcurl", stringToHex(codes[1]));
+                String sourceUrl = codes.length > 1 ? codes[1] : "";
+                if (sourceUrl != null && sourceUrl.length() > 0) {
+                    putCookie("srcurl", stringToHex(sourceUrl));
                 }
                 String verifyUrl = BASE + "/?security_verify_img=" + stringToHex(codes[0]);
                 HttpData response = httpDataAllowHttpError(verifyUrl);
                 String html = new String(response.data, "UTF-8");
-                if (parseCaptcha(html, verifyUrl) != null) throw new IOException("验证码可能不正确");
+                nextCaptcha = parseCaptcha(html, sourceUrl != null && sourceUrl.length() > 0 ? sourceUrl : verifyUrl);
+                if (nextCaptcha != null) throw new IOException("验证码可能不正确或已过期");
                 return true;
             } catch (Exception e) {
                 error = e.getMessage();
@@ -384,6 +387,9 @@ public class MainActivity extends Activity {
             if (ok) {
                 statusText.setText("验证码已提交，正在重试搜索...");
                 if (pendingSearchQuery.length() > 0) new SearchTask().execute(pendingSearchQuery);
+            } else if (nextCaptcha != null) {
+                statusText.setText(error + "，请重新输入。 ");
+                showCaptchaDialog(nextCaptcha);
             } else {
                 statusText.setText("验证码提交失败：" + error);
             }
